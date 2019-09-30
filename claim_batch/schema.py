@@ -12,6 +12,7 @@ from graphene_django.filter import DjangoFilterConnectionField
 from product.schema import ProductGQLType
 from location.schema import LocationGQLType
 from .models import BatchRun, RelativeIndex
+from .services import ProcessBatchSubmit, ProcessBatchService
 from location.models import Location
 from medical.models import Diagnosis
 
@@ -37,6 +38,38 @@ class BatchRunSummaryGQLType(ObjectType):
     calc_date = graphene.String()
     index = graphene.Float()
 
+    class Meta:
+        interfaces = (graphene.relay.Node,)
+
+
+def batchRunSummaryFilter(**kwargs):
+    filter = ''
+    if kwargs.get('accountType'):
+        filter += 'r.RelType = %s AND ' % kwargs.get('accountType')
+    if kwargs.get('accountYear'):
+        filter += 'b.runYear = %s AND ' % kwargs.get('accountYear')
+    if kwargs.get('accountMonth'):
+        filter += 'b.runMonth = %s AND ' % kwargs.get('accountMonth')
+    if kwargs.get('accountRegion') and kwargs.get('accountRegion') == -1:
+        filter += 'l.LocationId is NULL AND '
+    elif kwargs.get('accountDistrict'):
+        filter += 'l.LocationId = %s AND ' % kwargs.get('accountDistrict')
+    if kwargs.get('accountProduct'):
+        filter += 'r.ProdId = %s AND ' % kwargs.get('accountProduct')
+    if kwargs.get('accountCareType'):
+        filter += "r.RelCareType = '%s' AND " % kwargs.get('accountCareType')
+    return filter + '1 = 1'
+
+
+class BatchRunSummaryConnection(graphene.Connection):
+    class Meta:
+        node = BatchRunSummaryGQLType
+
+    total_count = graphene.Int()
+
+    def resolve_total_count(root, info, **kwargs):
+        return len(root.iterable)
+
 
 class RelativeIndexGQLType(DjangoObjectType):
     class Meta:
@@ -52,20 +85,54 @@ class RelativeIndexGQLType(DjangoObjectType):
         connection_class = ExtendedConnection
 
 
+class ProcessBatchMutation(OpenIMISMutation):
+    """
+    Process Batch.
+    """
+
+    class Input(OpenIMISMutation.Input):
+        location_id = graphene.Int()
+        year = graphene.Int()
+        month = graphene.Int()
+
+    @classmethod
+    def async_mutate(cls, root, info, **data):
+        submit = ProcessBatchSubmit(
+            location_id=data['location_id'],
+            year=data['year'],
+            month=data['month']
+        )
+        service = ProcessBatchService(info.context.user)
+        res = service.submit(submit)
+        return res
+
+
 class Query(graphene.ObjectType):
     batch_runs = DjangoFilterConnectionField(BatchRunGQLType)
-    batch_runs_summaries = graphene.List(BatchRunSummaryGQLType)
+    batch_runs_summaries = graphene.relay.ConnectionField(
+        BatchRunSummaryConnection,
+        accountType=graphene.Int(),
+        accountYear=graphene.Int(),
+        accountMonth=graphene.Int(),
+        accountRegion=graphene.Int(),
+        accountDistrict=graphene.Int(),
+        accountProduct=graphene.Int(),
+        accountCareType=graphene.String()
+    )
     relative_indexes = DjangoFilterConnectionField(RelativeIndexGQLType)
 
     def resolve_batch_runs_summaries(self, info, **kwargs):
         sql = '''
         SELECT
+            HashBytes('MD5', CONCAT(
+                b.RunID, '_',p.ProdId, '_', r.RelIndexID
+            )),
             b.RunYear,
             b.RunMonth,
             p.ProductCode,
             p.ProductName,
             r.RelCareType,
-            r.CalcDate,
+            convert(varchar, r.CalcDate, 23),
             r.RelIndex
         FROM
             tblRelIndex r,
@@ -75,17 +142,24 @@ class Query(graphene.ObjectType):
         WHERE
             r.LocationId = l.LocationId AND
             l.LocationId = b.LocationId AND
-            r.ProdId = p.ProdId;
-        '''
+            r.ProdId = p.ProdId AND %s
+        ORDER BY
+            b.RunYear,
+            b.RunMonth;
+        ''' % batchRunSummaryFilter(**kwargs)
         with connection.cursor() as cursor:
             cursor.execute(sql)
-            return map(
-                lambda r: BatchRunSummaryGQLType(
-                    run_year=r[0],
-                    run_month=r[1],
-                    product_label=f'{r[2]} {r[3]}',
-                    care_type=r[4],
-                    calc_date=r[5],
-                    index=r[6]
-                ),
-                cursor.fetchall())
+            res = [BatchRunSummaryGQLType(
+                id=r[0],
+                run_year=r[1],
+                run_month=r[2],
+                product_label=f'{r[3]} {r[4]}',
+                care_type=r[5],
+                calc_date=r[6],
+                index=r[7]
+            ) for r in cursor.fetchall()]
+            return res
+
+
+class Mutation(graphene.ObjectType):
+    process_batch = ProcessBatchMutation.Field()
