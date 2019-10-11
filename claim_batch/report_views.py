@@ -1,6 +1,9 @@
+from django.core.exceptions import PermissionDenied
 from report.services import ReportService
 from .services import ReportDataService
 from .reports import pbh, pbp, pbc_H, pbc_P
+from .apps import ClaimBatchConfig
+from django.utils.translation import gettext as _
 
 
 def _report(prms):
@@ -19,6 +22,8 @@ def _report(prms):
 
 
 def report(request):
+    if not request.user.has_perms(ClaimBatchConfig.account_preview_perms):
+        raise PermissionDenied(_("unauthorized"))
     report_service = ReportService(request.user)
     report, default = _report(request.GET)
     report_data_service = ReportDataService(request.user)

@@ -1,4 +1,5 @@
 import graphene
+from django.core.exceptions import PermissionDenied
 from django.db import connection
 from django.db.models import Q
 from core import prefix_filterset, ExtendedConnection, filter_validity
@@ -13,8 +14,10 @@ from product.schema import ProductGQLType
 from location.schema import LocationGQLType
 from .models import BatchRun, RelativeIndex
 from .services import ProcessBatchSubmit, ProcessBatchService
+from .apps import ClaimBatchConfig
 from location.models import Location
 from medical.models import Diagnosis
+from django.utils.translation import gettext as _
 
 
 class BatchRunGQLType(DjangoObjectType):
@@ -96,7 +99,9 @@ class ProcessBatchMutation(OpenIMISMutation):
         month = graphene.Int()
 
     @classmethod
-    def async_mutate(cls, root, info, **data):
+    def async_mutate(cls, user, **data):
+        if not user.has_perms(ClaimBatchConfig.gql_mutation_process_batch_perms):
+            raise PermissionDenied(_("unauthorized"))
         submit = ProcessBatchSubmit(
             location_id=data['location_id'],
             year=data['year'],
@@ -121,7 +126,13 @@ class Query(graphene.ObjectType):
     )
     relative_indexes = DjangoFilterConnectionField(RelativeIndexGQLType)
 
+    def resolve_batch_runs(self, info, **kwargs):
+        if not info.context.user.has_perms(ClaimBatchConfig.gql_query_batch_runs_perms):
+            raise PermissionDenied(_("unauthorized"))
+
     def resolve_batch_runs_summaries(self, info, **kwargs):
+        if not info.context.user.has_perms(ClaimBatchConfig.gql_query_batch_runs_perms):
+            raise PermissionDenied(_("unauthorized"))
         sql = '''
         SELECT
             HashBytes('MD5', CONCAT(
@@ -159,6 +170,10 @@ class Query(graphene.ObjectType):
                 index=r[7]
             ) for r in cursor.fetchall()]
             return res
+
+    def resolve_relative_indexes(self, info, **kwargs):
+        if not info.context.user.has_perms(ClaimBatchConfig.gql_query_relative_indexes_perms):
+            raise PermissionDenied(_("unauthorized"))
 
 
 class Mutation(graphene.ObjectType):

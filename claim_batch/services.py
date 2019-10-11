@@ -1,7 +1,6 @@
 import xml.etree.ElementTree as ET
 
 import core
-from django.core.exceptions import PermissionDenied
 from django.db import connection
 
 
