@@ -9,7 +9,7 @@ os.chdir(os.path.normpath(os.path.join(os.path.abspath(__file__), os.pardir)))
 
 setup(
     name='openimis-be-claim_batch',
-    version='0.0.1',
+    version='0.0.7',
     packages=find_packages(),
     include_package_data=True,
     license='GNU AGPL v3',
@@ -22,7 +22,7 @@ setup(
         'django',
         'django-db-signals',
         'djangorestframework',
-    ],   
+    ],
     classifiers=[
         'Environment :: Web Environment',
         'Framework :: Django',
