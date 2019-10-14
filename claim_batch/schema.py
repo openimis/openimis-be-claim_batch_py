@@ -92,6 +92,8 @@ class ProcessBatchMutation(OpenIMISMutation):
     """
     Process Batch.
     """
+    _mutation_module = "claim_batch"
+    _mutation_class = "ProcessBatchMutation"
 
     class Input(OpenIMISMutation.Input):
         location_id = graphene.Int()
@@ -107,7 +109,7 @@ class ProcessBatchMutation(OpenIMISMutation):
             year=data['year'],
             month=data['month']
         )
-        service = ProcessBatchService(info.context.user)
+        service = ProcessBatchService(user)
         res = service.submit(submit)
         return res
 
