@@ -22,6 +22,8 @@ setup(
         'django',
         'django-db-signals',
         'djangorestframework',
+        'location.models.Location',
+        'product.models.Product',
     ],
     classifiers=[
         'Environment :: Web Environment',
@@ -31,7 +33,6 @@ setup(
         'License :: OSI Approved :: GNU Affero General Public License v3',
         'Operating System :: OS Independent',
         'Programming Language :: Python',
-        'Programming Language :: Python :: 3.5',
         'Programming Language :: Python :: 3.6',
         'Programming Language :: Python :: 3.7',
     ],

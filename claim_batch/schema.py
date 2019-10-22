@@ -16,7 +16,6 @@ from .models import BatchRun, RelativeIndex
 from .services import ProcessBatchSubmit, ProcessBatchService
 from .apps import ClaimBatchConfig
 from location.models import Location
-from medical.models import Diagnosis
 from django.utils.translation import gettext as _
 
 
