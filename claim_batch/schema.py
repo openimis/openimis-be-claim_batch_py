@@ -146,15 +146,11 @@ class Query(graphene.ObjectType):
             r.RelCareType,
             convert(varchar, r.CalcDate, 23),
             r.RelIndex
-        FROM
-            tblRelIndex r,
-            tblLocations l,
-            tblBatchRun b,
-            tblProduct p
-        WHERE
-            r.LocationId = l.LocationId AND
-            l.LocationId = b.LocationId AND
-            r.ProdId = p.ProdId AND %s
+        FROM tblBatchRun b
+        LEFT JOIN tblLocations l on l.LocationId = b.LocationId
+        LEFT JOIN tblRelIndex r on r.LocationId = b.LocationId
+        LEFT JOIN tblProduct p on r.ProdId = p.ProdId
+        WHERE %s
         ORDER BY
             b.RunYear,
             b.RunMonth;
