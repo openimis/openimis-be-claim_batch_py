@@ -33,6 +33,12 @@ None
 ## Additional Endpoints
 * report: generating preview PDF
 
+## Reports
+* `claim_batch_pbc_P`: Account preview, with claims, group by products
+* `claim_batch_pbc_H`: Account preview, with claims, group by health facilities
+* `claim_batch_pbh`: Account preview, group by products
+* `claim_batch_pbp`: Account preview, group by products
+
 ## Configuration options (can be changed via core.ModuleConfiguration)
 * gql_query_batch_runs_perms: required rights to call batch_runs GraphQL query (default: [])
 * gql_query_relative_indexes_perms: required rights to call relative_indexes GraphQL query (default: [])
