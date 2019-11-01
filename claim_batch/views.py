@@ -28,4 +28,17 @@ def report(request):
     report, default = _report(request.GET)
     report_data_service = ReportDataService(request.user)
     data = report_data_service.fetch(request.GET)
-    return report_service.process(report, {'data': data}, default)
+    return report_service.process(report,
+                                  {'data': data,
+                                   'DateFrom': request.GET['dateFrom'],
+                                   'DateTo': request.GET['dateTo'],
+                                   'RegionCode': request.GET['regionCode'],
+                                   'RegionName': request.GET['regionName'],
+                                   'HFCode': request.GET['hfCode'],
+                                   'HFName': request.GET['hfName'],
+                                   'HFLevel': request.GET['hfLevel'],
+                                   'ProductCode': request.GET['productCode'],
+                                   'ProductName': request.GET['productName'],
+                                   'RunDate': request.GET['runDate']
+                                   },
+                                  default)

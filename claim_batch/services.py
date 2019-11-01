@@ -1,7 +1,9 @@
 import xml.etree.ElementTree as ET
+import pandas as pd
 
 import core
 from django.db import connection
+from django.utils.translation import gettext as _
 
 
 @core.comparable
@@ -90,31 +92,31 @@ def process_batch_report_data_with_claims(prms):
             finally:
                 next = cur.nextset()
     return [{
-        "ClaimCode": r[0],
-        "DateClaimed": r[1].strftime("%Y-%m-%d") if r[1] is not None else None,
-        "OtherNamesAdmin": r[2],
-        "LastNameAdmin": r[3],
-        "DateFrom": r[4].strftime("%Y-%m-%d") if r[4] is not None else None,
-        "DateTo": r[5].strftime("%Y-%m-%d") if r[5] is not None else None,
-        "CHFID": r[6],
-        "OtherNames": r[7],
-        "LastName": r[8],
-        "HFID": r[9],
-        "HFCode": r[10],
-        "HFName": r[11],
-        "AccCode": r[12],
-        "ProdID": r[13],
-        "ProductCode": r[14],
-        "ProductName": r[15],
-        "PriceAsked": r[16],
-        "PriceApproved": r[17],
-        "PriceAdjusted": r[18],
-        "RemuneratedAmount": r[19],
-        "DistrictID": r[20],
-        "DistrictName": r[21],
-        "RegionID": r[22],
-        "RegionName": r[23]
-    } for r in data]
+        "ClaimCode": row[0],
+        "DateClaimed": row[1].strftime("%Y-%m-%d") if row[1] is not None else None,
+        "OtherNamesAdmin": row[2],
+        "LastNameAdmin": row[3],
+        "DateFrom": row[4].strftime("%Y-%m-%d") if row[4] is not None else None,
+        "DateTo": row[5].strftime("%Y-%m-%d") if row[5] is not None else None,
+        "CHFID": row[6],
+        "OtherNames": row[7],
+        "LastName": row[8],
+        "HFID": row[9],
+        "HFCode": row[10],
+        "HFName": row[11],
+        "AccCode": row[12],
+        "ProdID": row[13],
+        "ProductCode": row[14],
+        "ProductName": row[15],
+        "PriceAsked": row[16],
+        "PriceApproved": row[17],
+        "PriceAdjusted": row[18],
+        "RemuneratedAmount": row[19],
+        "DistrictID": row[20],
+        "DistrictName": row[21],
+        "RegionID": row[22],
+        "RegionName": row[23]
+    } for row in data]
 
 
 def process_batch_report_data(prms):
@@ -150,26 +152,129 @@ def process_batch_report_data(prms):
             finally:
                 next = cur.nextset()
     return [{
-        "RegionName": r[0],
-        "DistrictName": r[1],
-        "HFCode": r[2],
-        "HFName": r[3],
-        "ProductCode": r[4],
-        "ProductName": r[5],
-        "Remunerated": r[6],
-        "AccCodeRemuneration": r[7],
-        "AccCode": r[8]
-    } for r in data]
+        "RegionName": row[0],
+        "DistrictName": row[1],
+        "HFCode": row[2],
+        "HFName": row[3],
+        "ProductCode": row[4],
+        "ProductName": row[5],
+        "RemuneratedAmount": row[6],
+        "AccCodeRemuneration": row[7],
+        "AccCode": row[8]
+    } for row in data]
+
+
+def regions_sum(df, show_claims):
+    if show_claims:
+        return df.groupby(['RegionName'])[
+            'PriceAsked', 'PriceApproved', 'PriceAdjusted', 'RemuneratedAmount'].sum().to_dict()
+    else:
+        return df.groupby(['RegionName'])['RemuneratedAmount'].sum().to_dict()
+
+
+def districts_sum(df, show_claims):
+    if show_claims:
+        return df.groupby(['RegionName', 'DistrictName'])[
+            'PriceAsked', 'PriceApproved', 'PriceAdjusted', 'RemuneratedAmount'].sum().to_dict()
+    else:
+        return df.groupby(['RegionName', 'DistrictName'])['RemuneratedAmount'].sum().to_dict()
+
+
+def health_facilities_sum(df, show_claims):
+    if show_claims:
+        return df.groupby(['RegionName', 'DistrictName', 'HFCode'])[
+            'PriceAsked', 'PriceApproved', 'PriceAdjusted', 'RemuneratedAmount'].sum().to_dict()
+    else:
+        return df.groupby(['RegionName', 'DistrictName', 'HFCode'])['RemuneratedAmount'].sum().to_dict()
+
+
+def products_sum(df, show_claims):
+    if show_claims:
+        return df.groupby(['RegionName', 'DistrictName', 'ProductCode'])[
+            'PriceAsked', 'PriceApproved', 'PriceAdjusted', 'RemuneratedAmount'].sum().to_dict()
+    else:
+        return df.groupby(['RegionName', 'DistrictName', 'ProductCode'])['RemuneratedAmount'].sum().to_dict()
+
+
+def region_and_district_sums(row, regions_sum, districts_sum, show_claims):
+    if show_claims:
+        return {
+            'SUMR_PriceAsked': regions_sum['PriceAsked'][row['RegionName']],
+            'SUMR_PriceApproved': regions_sum['PriceApproved'][row['RegionName']],
+            'SUMR_PriceAdjusted': regions_sum['PriceAdjusted'][row['RegionName']],
+            'SUMR_RemuneratedAmount': regions_sum['RemuneratedAmount'][row['RegionName']],
+            'SUMD_PriceAsked': districts_sum['PriceAsked'][(row['RegionName'], row['DistrictName'])],
+            'SUMD_PriceApproved': districts_sum['PriceApproved'][(row['RegionName'], row['DistrictName'])],
+            'SUMD_PriceAdjusted': districts_sum['PriceAdjusted'][(row['RegionName'], row['DistrictName'])],
+            'SUMD_RemuneratedAmount': districts_sum['RemuneratedAmount'][(row['RegionName'], row['DistrictName'])]
+        }
+    else:
+        return {
+            'SUMR_RemuneratedAmount': regions_sum[row['RegionName']],
+            'SUMD_RemuneratedAmount': districts_sum[(row['RegionName'], row['DistrictName'])]
+        }
+
+
+def add_sums_by_hf(data, regions_sum, districts_sum, health_facilities_sum, show_claims):
+    if show_claims:
+        data = [{**row,
+                 **region_and_district_sums(row, regions_sum, districts_sum, show_claims),
+                 'SUMHF_PriceAsked': health_facilities_sum['PriceAsked'][(row['RegionName'], row['DistrictName'], row['HFCode'])],
+                 'SUMHF_PriceApproved': health_facilities_sum['PriceApproved'][(row['RegionName'], row['DistrictName'], row['HFCode'])],
+                 'SUMHF_PriceAdjusted': health_facilities_sum['PriceAdjusted'][(row['RegionName'], row['DistrictName'], row['HFCode'])],
+                 'SUMHF_RemuneratedAmount': health_facilities_sum['RemuneratedAmount'][(row['RegionName'], row['DistrictName'], row['HFCode'])]
+                 } for row in data]
+    else:
+        data = [{**row,
+                 **region_and_district_sums(row, regions_sum, districts_sum, show_claims),
+                 'SUMHF_RemuneratedAmount': health_facilities_sum[(row['RegionName'], row['DistrictName'], row['HFCode'])]
+                 } for row in data]
+    return sorted(data, key=lambda i: (
+        i['RegionName'], i['DistrictName'], i['HFCode']))
+
+
+def add_sums_by_prod(data, regions_sum, districts_sum, products_sum, show_claims):
+    if show_claims:
+        data=[{**row,
+                 **region_and_district_sums(row, regions_sum, districts_sum, show_claims),
+                 'SUMP_PriceAsked': products_sum['PriceAsked'][(row['RegionName'], row['DistrictName'], row['ProductCode'])],
+                 'SUMP_PriceApproved': products_sum['PriceApproved'][(row['RegionName'], row['DistrictName'], row['ProductCode'])],
+                 'SUMP_PriceAdjusted': products_sum['PriceAdjusted'][(row['RegionName'], row['DistrictName'], row['ProductCode'])],
+                 'SUMP_RemuneratedAmount': products_sum['RemuneratedAmount'][(row['RegionName'], row['DistrictName'], row['ProductCode'])]
+                 } for row in data]
+    else:
+        data=[{**row,
+                 **region_and_district_sums(row, regions_sum, districts_sum, show_claims),
+                 'SUMP_RemuneratedAmount': products_sum[(row['RegionName'], row['DistrictName'], row['ProductCode'])]
+                 } for row in data]
+    return sorted(data, key=lambda i: (
+        i['RegionName'], i['DistrictName'], i['ProductCode']))
 
 
 class ReportDataService(object):
     def __init__(self, user):
-        self.user = user
+        self.user=user
 
     def fetch(self, prms):
-        show_claims = prms.get("showClaims", "false") == "true"
-        if (show_claims):
-            data = process_batch_report_data_with_claims(prms)
+        show_claims=prms.get("showClaims", "false") == "true"
+        group=prms.get("group", "H")
+
+        if show_claims:
+            data=process_batch_report_data_with_claims(prms)
         else:
-            data = process_batch_report_data(prms)
-        return data
+            data=process_batch_report_data(prms)
+        if not data:
+            raise ValueError(_("claim_batch.reports.nodata"))
+        df=pd.DataFrame.from_dict(data)
+        if group == "H":
+            return add_sums_by_hf(data,
+                                  regions_sum(df, show_claims),
+                                  districts_sum(df, show_claims),
+                                  health_facilities_sum(df, show_claims),
+                                  show_claims)
+        else:
+            return add_sums_by_prod(data,
+                                    regions_sum(df, show_claims),
+                                    districts_sum(df, show_claims),
+                                    products_sum(df, show_claims),
+                                    show_claims)
