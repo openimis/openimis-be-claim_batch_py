@@ -27,6 +27,7 @@ class BatchRunGQLType(DjangoObjectType):
         filter_fields = {
             "id": ["exact"],
             "run_date": ["exact", "lt", "lte", "gt", "gte"],
+            "location": ["isnull"],
             **prefix_filterset("location__", LocationGQLType._meta.filter_fields),
         }
         connection_class = ExtendedConnection
