@@ -1,12 +1,8 @@
 import graphene
 from django.core.exceptions import PermissionDenied
 from django.db import connection
-from django.db.models import Q
 from core import prefix_filterset, ExtendedConnection, filter_validity
-from core.schema import TinyInt, SmallInt, OpenIMISMutation
-from django.conf import settings
-from django.contrib.auth.models import AnonymousUser
-from django.core.exceptions import ValidationError
+from core.schema import TinyInt, SmallInt, OpenIMISMutation, OrderedDjangoFilterConnectionField
 from graphene import InputObjectType, ObjectType
 from graphene_django import DjangoObjectType
 from graphene_django.filter import DjangoFilterConnectionField
@@ -15,7 +11,6 @@ from location.schema import LocationGQLType
 from .models import BatchRun, RelativeIndex
 from .services import ProcessBatchSubmit, ProcessBatchService
 from .apps import ClaimBatchConfig
-from location.models import Location
 from django.utils.translation import gettext as _
 
 
@@ -53,10 +48,12 @@ def batchRunSummaryFilter(**kwargs):
         filter += 'b.runYear = %s AND ' % kwargs.get('accountYear')
     if kwargs.get('accountMonth'):
         filter += 'b.runMonth = %s AND ' % kwargs.get('accountMonth')
-    if kwargs.get('accountRegion') and kwargs.get('accountRegion') == -1:
-        filter += 'l.LocationId is NULL AND '
-    elif kwargs.get('accountDistrict'):
+    if kwargs.get('accountDistrict'):
         filter += 'l.LocationId = %s AND ' % kwargs.get('accountDistrict')
+    elif kwargs.get('accountRegion'):
+        filter += 'l.LocationId = %s AND ' % kwargs.get('accountRegion')
+    else:
+        filter += 'l.LocationId is NULL AND '
     if kwargs.get('accountProduct'):
         filter += 'r.ProdId = %s AND ' % kwargs.get('accountProduct')
     if kwargs.get('accountCareType'):
@@ -115,7 +112,9 @@ class ProcessBatchMutation(OpenIMISMutation):
 
 
 class Query(graphene.ObjectType):
-    batch_runs = DjangoFilterConnectionField(BatchRunGQLType)
+    batch_runs = OrderedDjangoFilterConnectionField(
+        BatchRunGQLType,
+        orderBy=graphene.List(of_type=graphene.String))
     batch_runs_summaries = graphene.relay.ConnectionField(
         BatchRunSummaryConnection,
         accountType=graphene.Int(),
