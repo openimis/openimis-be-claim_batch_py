@@ -93,7 +93,7 @@ class ProcessBatchMutation(OpenIMISMutation):
     _mutation_class = "ProcessBatchMutation"
 
     class Input(OpenIMISMutation.Input):
-        location_id = graphene.Int()
+        location_id = graphene.Int(required=False)
         year = graphene.Int()
         month = graphene.Int()
 
@@ -102,7 +102,7 @@ class ProcessBatchMutation(OpenIMISMutation):
         if not user.has_perms(ClaimBatchConfig.gql_mutation_process_batch_perms):
             raise PermissionDenied(_("unauthorized"))
         submit = ProcessBatchSubmit(
-            location_id=data['location_id'],
+            location_id=data.get('location_id', None),
             year=data['year'],
             month=data['month']
         )

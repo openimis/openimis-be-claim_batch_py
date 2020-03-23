@@ -305,7 +305,7 @@ def create_relative_index(prod_id, prod_value, year, relative_type, location_id,
             qs_val = qs_val.exclude(claim__health_facility__level=HealthFacility.LEVEL_HOSPITAL)
         # else both, no filter needed
 
-        price_valuated = qs_val.aggregate(Sum(Coalesce("price_valuated", 0)))
+        price_valuated = qs_val.aggregate(price_valuated=Sum(Coalesce("price_valuated", 0)))
         claim_value += price_valuated["distribution_percent__sum"] if price_valuated else 0
 
     if claim_value == 0:
