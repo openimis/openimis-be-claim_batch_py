@@ -344,18 +344,16 @@ def process_batch(audit_user_id, location_id, period, year):
         .filter(validity_to__isnull=False).values("id").first()
 
     if already_run_batch:
-        return ProcessBatchSubmitError(2)
+        return [str(ProcessBatchSubmitError(2))]
 
     try:
         do_process_batch(audit_user_id, location_id, period, year)
-        # Ok
-        return ProcessBatchSubmitError(0)
     except Exception as exc:
         logger.warning(
             f"Exception while processing batch user {audit_user_id}, location {location_id}, period {period}, year {year}",
             exc_info=True
         )
-        return ProcessBatchSubmitError(-1, str(exc))
+        return [str(ProcessBatchSubmitError(-1, str(exc)))]
 
 
 def do_process_batch(audit_user_id, location_id, period, year):
@@ -498,8 +496,6 @@ def do_process_batch(audit_user_id, location_id, period, year):
             .filter(process_stamp__month__gte=month_start)\
             .filter(process_stamp__month__lte=month_end)\
             .update(batch_run=created_run)
-
-    return result
 
 
 def _get_relative_index(product_id, relative_period, relative_year, relative_care_type='B', relative_type=12):
