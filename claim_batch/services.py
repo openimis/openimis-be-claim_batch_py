@@ -13,6 +13,7 @@ from django.utils.translation import gettext as _
 from location.models import HealthFacility
 from product.models import ProductItem, Product, ProductService, ProductItemOrService
 
+logger = logging.getLogger(__name__)
 
 @core.comparable
 class ProcessBatchSubmit(object):
@@ -333,8 +334,6 @@ def process_batch(audit_user_id, location_id, period, year):
     if location_id == -1:
         location_id = None
 
-    result = 0  # OK
-
     # Transactional stuff
     already_run_batch = BatchRun.objects\
         .filter(run_year=year)\
@@ -344,9 +343,21 @@ def process_batch(audit_user_id, location_id, period, year):
         .filter(validity_to__isnull=False).values("id").first()
 
     if already_run_batch:
-        # Already run
-        return 2
+        return ProcessBatchSubmitError(2)
 
+    try:
+        do_process_batch(audit_user_id, location_id, period, year)
+        # Ok
+        return ProcessBatchSubmitError(0)
+    except Exception as exc:
+        logger.warning(
+            f"Exception while processing batch user {audit_user_id}, location {location_id}, period {period}, year {year}",
+            exc_info=True
+        )
+        return ProcessBatchSubmitError(-1, str(exc))
+
+
+def do_process_batch(audit_user_id, location_id, period, year):
     relative_index_calculation_monthly(rel_type=12, period=period, year=year, location_id=location_id, product_id=0,
                                        audit_user_id=audit_user_id)
     if period == 3:
@@ -394,7 +405,6 @@ def process_batch(audit_user_id, location_id, period, year):
             elif product["claim__health_facility__level"] != 'H' and product["product__period_rel_prices_op"]:
                 prod_rel_price_type = int(product["product__period_rel_prices_op"])
             else:
-                # This should normally be impossible but the linter is not so sure
                 raise Exception(f"product {product['product_id']} has an impossible in/out patient or both")
 
             if prod_rel_price_type == RelativeIndex.TYPE_MONTH:
