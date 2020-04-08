@@ -389,9 +389,9 @@ def process_batch(audit_user_id, location_id, period, year):
             index = -1
             if product["product__period_rel_prices"]:
                 prod_rel_price_type = int(product["product__period_rel_prices"])
-            elif product.level == 'H' and product["product__period_rel_prices_ip"]:
+            elif product["level"] == 'H' and product["product__period_rel_prices_ip"]:
                 prod_rel_price_type = int(product["product__period_rel_prices_ip"])
-            elif product.level != 'H' and product["product__period_rel_prices_op"]:
+            elif product["level"] != 'H' and product["product__period_rel_prices_op"]:
                 prod_rel_price_type = int(product["product__period_rel_prices_op"])
             else:
                 # This should normally be impossible but the linter is not so sure
@@ -409,8 +409,8 @@ def process_batch(audit_user_id, location_id, period, year):
 
             if index > -1:
                 prod_qs \
-                    .filter(claim__health_facility__level=product.level)\
-                    .filter(product_id=product.product_id)\
+                    .filter(claim__health_facility__level=product["level"])\
+                    .filter(product_id=product["product_id"])\
                     .update(remunerated_amount=F(F("price_valuated")*index))
 
     # Get all the claims in valuated state with no Relative index /Services
