@@ -16,6 +16,7 @@ from product.models import ProductItem, Product, ProductService, ProductItemOrSe
 
 logger = logging.getLogger(__name__)
 
+
 @core.comparable
 class ProcessBatchSubmit(object):
     def __init__(self, location_id, year, month):
@@ -109,7 +110,7 @@ def relative_index_calculation_monthly(rel_type, period, year, location_id, prod
             )
             """)
 
-            #insert into numerator (location_id, product_id, value, work_value)
+            # insert into numerator (location_id, product_id, value, work_value)
             # The Django approach to that query doesn't work in Django 2 as it needs a boolean condition on the F in When
             # Policy.objects\
             #     .filter(validity_to__isnull=True)\
@@ -229,7 +230,7 @@ def relative_index_calculation_monthly(rel_type, period, year, location_id, prod
                            AND (Prod.ProdID=%s or %s=0)
                            AND PL.PolicyStatus <> 1
                            AND PR.PayDate <= PL.ExpiryDate
-    
+
                          GROUP BY L.LocationId, Prod.ProdID, PR.Amount, PR.PayDate, PL.ExpiryDate, PL.EffectiveDate
                      ) NumValue
                 GROUP BY LocationId, ProdID
@@ -270,7 +271,7 @@ def relative_index_calculation_monthly(rel_type, period, year, location_id, prod
                     for rel_price_item, rel_price_type in rel_price_mapping:
                         if product and getattr(product, rel_price_item) == Product.RELATIVE_PRICE_PERIOD_YEAR:
                             create_relative_index(prod_id, prod_value, year, rel_type, location_id, audit_user_id,
-                                              rel_price_type)
+                                                  rel_price_type)
 
 
 def create_relative_index(prod_id, prod_value, year, relative_type, location_id, audit_user_id, rel_price_type,
@@ -282,7 +283,7 @@ def create_relative_index(prod_id, prod_value, year, relative_type, location_id,
         .filter(care_type=rel_price_type) \
         .filter(validity_to__isnull=False) \
         .first()
-    distr_perc = distr.percent if distr and distr.percent else 1.0
+    distr_perc = distr.percent if distr and distr.percent else 1
 
     claim_value = 0
     for claim_detail in [ClaimService, ClaimItem]:
@@ -298,7 +299,8 @@ def create_relative_index(prod_id, prod_value, year, relative_type, location_id,
         if period:
             qs_val = qs_val.filter(nn_process_stamp_month=period)
         elif month_start and month_end:
-            qs_val = qs_val.filter(nn_process_stamp_month__gte=month_start).filter(nn_process_stamp_month__lte=month_end)
+            qs_val = qs_val.filter(nn_process_stamp_month__gte=month_start).filter(
+                nn_process_stamp_month__lte=month_end)
         # else not needed as the year simply relies on the above year filter
 
         if rel_price_type == RelativeIndex.CARE_TYPE_IN_PATIENT:
@@ -307,8 +309,8 @@ def create_relative_index(prod_id, prod_value, year, relative_type, location_id,
             qs_val = qs_val.exclude(claim__health_facility__level=HealthFacility.LEVEL_HOSPITAL)
         # else both, no filter needed
 
-        price_valuated = qs_val.aggregate(price_valuated=Sum(Coalesce("price_valuated", 0)))
-        claim_value += price_valuated["distribution_percent__sum"] if price_valuated else 0
+        price_valuated = qs_val.values("price_valuated").aggregate(sum=Sum(Coalesce("price_valuated", 0)))["sum"]
+        claim_value += price_valuated if price_valuated else 0
 
     if claim_value == 0:
         rel_index = 1
@@ -318,10 +320,10 @@ def create_relative_index(prod_id, prod_value, year, relative_type, location_id,
     from core.utils import TimeUtils
     return RelativeIndex.objects.create(
         product_id=prod_id,
-        relative_type=relative_type,
+        type=relative_type,
         care_type=RelativeIndex.CARE_TYPE_IN_PATIENT,
         year=year,
-        month=period,
+        period=period,
         calc_date=TimeUtils.now(),
         rel_index=rel_index,
         audit_user_id=audit_user_id,
@@ -336,11 +338,11 @@ def process_batch(audit_user_id, location_id, period, year):
         location_id = None
 
     # Transactional stuff
-    already_run_batch = BatchRun.objects\
-        .filter(run_year=year)\
-        .filter(run_month=period)\
-        .annotate(nn_location_id=Coalesce("location_id", Value(-1)))\
-        .filter(nn_location_id=-1 if location_id is None else location_id)\
+    already_run_batch = BatchRun.objects \
+        .filter(run_year=year) \
+        .filter(run_month=period) \
+        .annotate(nn_location_id=Coalesce("location_id", Value(-1))) \
+        .filter(nn_location_id=-1 if location_id is None else location_id) \
         .filter(validity_to__isnull=False).values("id").first()
 
     if already_run_batch:
@@ -375,17 +377,18 @@ def do_process_batch(audit_user_id, location_id, period, year):
                                            audit_user_id=audit_user_id)
 
     for svc_item in [ClaimItem, ClaimService]:
-        prod_qs = svc_item.objects\
-            .filter(claim__status=Claim.STATUS_PROCESSED)\
-            .filter(claim__validity_to__isnull=True)\
-            .filter(validity_to__isnull=True)\
-            .filter(status=svc_item.STATUS_PASSED)\
-            .filter(price_origin=ProductItemOrService.ORIGIN_RELATIVE)\
-            .annotate(prod_location=Coalesce("product__location_id", Value(-1)))\
+        prod_qs = svc_item.objects \
+            .filter(claim__status=Claim.STATUS_PROCESSED) \
+            .filter(claim__validity_to__isnull=True) \
+            .filter(validity_to__isnull=True) \
+            .filter(status=svc_item.STATUS_PASSED) \
+            .filter(price_origin=ProductItemOrService.ORIGIN_RELATIVE) \
+            .annotate(prod_location=Coalesce("product__location_id", Value(-1))) \
             .filter(prod_location=location_id if location_id else -1)
 
         product_loop = prod_qs.values(
-            "claim__health_facility__level", "product_id", "product__period_rel_prices", "product__period_rel_prices_op",
+            "claim__health_facility__level", "product_id", "product__period_rel_prices",
+            "product__period_rel_prices_op",
             "product__period_rel_prices_ip", "claim__process_stamp__month", "claim__process_stamp__year") \
             .distinct()
 
@@ -394,20 +397,21 @@ def do_process_batch(audit_user_id, location_id, period, year):
             target_month = product["claim__process_stamp__month"]
             target_year = product["claim__process_stamp__year"]
             # Will fail with Ethiopian calendar but so will the rest of this procedure
-            target_quarter = int((target_month-1)/3)+1
+            target_quarter = int((target_month - 1) / 3) + 1
 
             index = -1
             if product["product__period_rel_prices"]:
-                prod_rel_price_type = int(product["product__period_rel_prices"])
+                prod_rel_price_type = product["product__period_rel_prices"]
             elif product["claim__health_facility__level"] == 'H' and product["product__period_rel_prices_ip"]:
-                prod_rel_price_type = int(product["product__period_rel_prices_ip"])
+                prod_rel_price_type = product["product__period_rel_prices_ip"]
             elif product["claim__health_facility__level"] != 'H' and product["product__period_rel_prices_op"]:
-                prod_rel_price_type = int(product["product__period_rel_prices_op"])
+                prod_rel_price_type = product["product__period_rel_prices_op"]
             else:
                 raise Exception(f"product {product['product_id']} has an impossible in/out patient or both")
 
             if prod_rel_price_type == RelativeIndex.TYPE_MONTH:
-                index = _get_relative_index(product["product_id"], target_month, target_year, RelativeIndex.CARE_TYPE_BOTH,
+                index = _get_relative_index(product["product_id"], target_month, target_year,
+                                            RelativeIndex.CARE_TYPE_BOTH,
                                             RelativeIndex.TYPE_MONTH)
             if prod_rel_price_type == RelativeIndex.TYPE_QUARTER:
                 index = _get_relative_index(product["product_id"], target_quarter, target_year,
@@ -418,23 +422,23 @@ def do_process_batch(audit_user_id, location_id, period, year):
 
             if index > -1:
                 prod_qs \
-                    .filter(claim__health_facility__level=product["claim__health_facility__level"])\
-                    .filter(product_id=product["product_id"])\
-                    .update(remunerated_amount=F(F("price_valuated")*index))
+                    .filter(claim__health_facility__level=product["claim__health_facility__level"]) \
+                    .filter(product_id=product["product_id"]) \
+                    .update(remunerated_amount=F(F("price_valuated") * index))
 
     # Get all the claims in valuated state with no Relative index /Services
     def filter_valuated_claims(base):
-        return base.objects.filter(claim__status=Claim.STATUS_VALUATED)\
-            .filter(claim__validity_to__isnull=True)\
-            .filter(validity_to__isnull=True)\
-            .filter(status=ClaimDetail.STATUS_PASSED)\
-            .exclude(price_origin='R')\
-            .annotate(prod_location=Coalesce("product__location_id", Value(-1)))\
-            .filter(prod_location=location_id if location_id else -1)\
-            .filter(claim__batch_run_id__isnull=True)\
-            .filter(claim__process_stamp__month=period)\
-            .filter(claim__process_stamp__year=year)\
-            .values("claim_id")\
+        return base.objects.filter(claim__status=Claim.STATUS_VALUATED) \
+            .filter(claim__validity_to__isnull=True) \
+            .filter(validity_to__isnull=True) \
+            .filter(status=ClaimDetail.STATUS_PASSED) \
+            .exclude(price_origin='R') \
+            .annotate(prod_location=Coalesce("product__location_id", Value(-1))) \
+            .filter(prod_location=location_id if location_id else -1) \
+            .filter(claim__batch_run_id__isnull=True) \
+            .filter(claim__process_stamp__month=period) \
+            .filter(claim__process_stamp__year=year) \
+            .values("claim_id") \
             .distinct()
 
     item_ids = filter_valuated_claims(ClaimItem)
@@ -457,12 +461,12 @@ def do_process_batch(audit_user_id, location_id, period, year):
     item_prod_ids = filter_item_or_service(ClaimItem)
     service_prod_ids = filter_item_or_service(ClaimService)
 
-    Claim.objects\
-        .filter(status=Claim.STATUS_PROCESSED)\
-        .filter(id__in=all_ids)\
-        .filter(validity_to__isnull=True)\
-        .exclude(id__in=item_prod_ids)\
-        .exclude(id__in=service_prod_ids)\
+    Claim.objects \
+        .filter(status=Claim.STATUS_PROCESSED) \
+        .filter(id__in=all_ids) \
+        .filter(validity_to__isnull=True) \
+        .exclude(id__in=item_prod_ids) \
+        .exclude(id__in=service_prod_ids) \
         .update(status=Claim.STATUS_VALUATED)
 
     from core.utils import TimeUtils
@@ -480,30 +484,30 @@ def do_process_batch(audit_user_id, location_id, period, year):
         month_end = 12
 
     # Link claims to this batch run
-    filter_base = Claim.objects\
-        .filter(id__in=all_ids)\
-        .filter(status=Claim.STATUS_VALUATED)\
-        .filter(batch_run_id__isnull=True)\
+    filter_base = Claim.objects \
+        .filter(id__in=all_ids) \
+        .filter(status=Claim.STATUS_VALUATED) \
+        .filter(batch_run_id__isnull=True) \
         .filter(process_stamp__year=year)
 
-    filter_base\
-        .filter(process_stamp__month=period)\
+    filter_base \
+        .filter(process_stamp__month=period) \
         .update(batch_run=created_run)
 
     # If more than a month was run
     if month_start > 0:
-        filter_base\
-            .filter(process_stamp__month__gte=month_start)\
-            .filter(process_stamp__month__lte=month_end)\
+        filter_base \
+            .filter(process_stamp__month__gte=month_start) \
+            .filter(process_stamp__month__lte=month_end) \
             .update(batch_run=created_run)
 
 
 def _get_relative_index(product_id, relative_period, relative_year, relative_care_type='B', relative_type=12):
-    qs = RelativeIndex.objects\
-        .filter(product_id=product_id)\
-        .filter(care_type=relative_care_type)\
-        .filter(type=relative_type)\
-        .filter(year=relative_year)\
+    qs = RelativeIndex.objects \
+        .filter(product_id=product_id) \
+        .filter(care_type=relative_care_type) \
+        .filter(type=relative_type) \
+        .filter(year=relative_year) \
         .filter(validity_to__isnull=True)
     if relative_period:
         qs = qs.filter(period=relative_period)
@@ -671,15 +675,20 @@ def add_sums_by_hf(data, regions_sum, districts_sum, health_facilities_sum, show
     if show_claims:
         data = [{**row,
                  **region_and_district_sums(row, regions_sum, districts_sum, show_claims),
-                 'SUMHF_PriceAsked': health_facilities_sum['PriceAsked'][(row['RegionName'], row['DistrictName'], row['HFCode'])],
-                 'SUMHF_PriceApproved': health_facilities_sum['PriceApproved'][(row['RegionName'], row['DistrictName'], row['HFCode'])],
-                 'SUMHF_PriceAdjusted': health_facilities_sum['PriceAdjusted'][(row['RegionName'], row['DistrictName'], row['HFCode'])],
-                 'SUMHF_RemuneratedAmount': health_facilities_sum['RemuneratedAmount'][(row['RegionName'], row['DistrictName'], row['HFCode'])]
+                 'SUMHF_PriceAsked': health_facilities_sum['PriceAsked'][
+                     (row['RegionName'], row['DistrictName'], row['HFCode'])],
+                 'SUMHF_PriceApproved': health_facilities_sum['PriceApproved'][
+                     (row['RegionName'], row['DistrictName'], row['HFCode'])],
+                 'SUMHF_PriceAdjusted': health_facilities_sum['PriceAdjusted'][
+                     (row['RegionName'], row['DistrictName'], row['HFCode'])],
+                 'SUMHF_RemuneratedAmount': health_facilities_sum['RemuneratedAmount'][
+                     (row['RegionName'], row['DistrictName'], row['HFCode'])]
                  } for row in data]
     else:
         data = [{**row,
                  **region_and_district_sums(row, regions_sum, districts_sum, show_claims),
-                 'SUMHF_RemuneratedAmount': health_facilities_sum[(row['RegionName'], row['DistrictName'], row['HFCode'])]
+                 'SUMHF_RemuneratedAmount': health_facilities_sum[
+                     (row['RegionName'], row['DistrictName'], row['HFCode'])]
                  } for row in data]
     return sorted(data, key=lambda i: (
         i['RegionName'], i['DistrictName'], i['HFCode']))
@@ -687,15 +696,19 @@ def add_sums_by_hf(data, regions_sum, districts_sum, health_facilities_sum, show
 
 def add_sums_by_prod(data, regions_sum, districts_sum, products_sum, show_claims):
     if show_claims:
-        data=[{**row,
+        data = [{**row,
                  **region_and_district_sums(row, regions_sum, districts_sum, show_claims),
-                 'SUMP_PriceAsked': products_sum['PriceAsked'][(row['RegionName'], row['DistrictName'], row['ProductCode'])],
-                 'SUMP_PriceApproved': products_sum['PriceApproved'][(row['RegionName'], row['DistrictName'], row['ProductCode'])],
-                 'SUMP_PriceAdjusted': products_sum['PriceAdjusted'][(row['RegionName'], row['DistrictName'], row['ProductCode'])],
-                 'SUMP_RemuneratedAmount': products_sum['RemuneratedAmount'][(row['RegionName'], row['DistrictName'], row['ProductCode'])]
+                 'SUMP_PriceAsked': products_sum['PriceAsked'][
+                     (row['RegionName'], row['DistrictName'], row['ProductCode'])],
+                 'SUMP_PriceApproved': products_sum['PriceApproved'][
+                     (row['RegionName'], row['DistrictName'], row['ProductCode'])],
+                 'SUMP_PriceAdjusted': products_sum['PriceAdjusted'][
+                     (row['RegionName'], row['DistrictName'], row['ProductCode'])],
+                 'SUMP_RemuneratedAmount': products_sum['RemuneratedAmount'][
+                     (row['RegionName'], row['DistrictName'], row['ProductCode'])]
                  } for row in data]
     else:
-        data=[{**row,
+        data = [{**row,
                  **region_and_district_sums(row, regions_sum, districts_sum, show_claims),
                  'SUMP_RemuneratedAmount': products_sum[(row['RegionName'], row['DistrictName'], row['ProductCode'])]
                  } for row in data]
@@ -705,19 +718,19 @@ def add_sums_by_prod(data, regions_sum, districts_sum, products_sum, show_claims
 
 class ReportDataService(object):
     def __init__(self, user):
-        self.user=user
+        self.user = user
 
     def fetch(self, prms):
-        show_claims=prms.get("showClaims", "false") == "true"
-        group=prms.get("group", "H")
+        show_claims = prms.get("showClaims", "false") == "true"
+        group = prms.get("group", "H")
 
         if show_claims:
-            data=process_batch_report_data_with_claims(prms)
+            data = process_batch_report_data_with_claims(prms)
         else:
-            data=process_batch_report_data(prms)
+            data = process_batch_report_data(prms)
         if not data:
             raise ValueError(_("claim_batch.reports.nodata"))
-        df=pd.DataFrame.from_dict(data)
+        df = pd.DataFrame.from_dict(data)
         if group == "H":
             return add_sums_by_hf(data,
                                   regions_sum(df, show_claims),
