@@ -1,12 +1,8 @@
 import graphene
 from django.core.exceptions import PermissionDenied
 from django.db import connection
-from django.db.models import Q
 from core import prefix_filterset, ExtendedConnection, filter_validity
-from core.schema import TinyInt, SmallInt, OpenIMISMutation
-from django.conf import settings
-from django.contrib.auth.models import AnonymousUser
-from django.core.exceptions import ValidationError
+from core.schema import TinyInt, SmallInt, OpenIMISMutation, OrderedDjangoFilterConnectionField
 from graphene import InputObjectType, ObjectType
 from graphene_django import DjangoObjectType
 from graphene_django.filter import DjangoFilterConnectionField
@@ -15,7 +11,6 @@ from location.schema import LocationGQLType
 from .models import BatchRun, RelativeIndex
 from .services import ProcessBatchSubmit, ProcessBatchService
 from .apps import ClaimBatchConfig
-from location.models import Location
 from django.utils.translation import gettext as _
 
 
@@ -27,6 +22,7 @@ class BatchRunGQLType(DjangoObjectType):
         filter_fields = {
             "id": ["exact"],
             "run_date": ["exact", "lt", "lte", "gt", "gte"],
+            "location": ["isnull"],
             **prefix_filterset("location__", LocationGQLType._meta.filter_fields),
         }
         connection_class = ExtendedConnection
@@ -52,10 +48,12 @@ def batchRunSummaryFilter(**kwargs):
         filter += 'b.runYear = %s AND ' % kwargs.get('accountYear')
     if kwargs.get('accountMonth'):
         filter += 'b.runMonth = %s AND ' % kwargs.get('accountMonth')
-    if kwargs.get('accountRegion') and kwargs.get('accountRegion') == -1:
-        filter += 'l.LocationId is NULL AND '
-    elif kwargs.get('accountDistrict'):
+    if kwargs.get('accountDistrict'):
         filter += 'l.LocationId = %s AND ' % kwargs.get('accountDistrict')
+    elif kwargs.get('accountRegion'):
+        filter += 'l.LocationId = %s AND ' % kwargs.get('accountRegion')
+    else:
+        filter += 'l.LocationId is NULL AND '
     if kwargs.get('accountProduct'):
         filter += 'r.ProdId = %s AND ' % kwargs.get('accountProduct')
     if kwargs.get('accountCareType'):
@@ -95,7 +93,7 @@ class ProcessBatchMutation(OpenIMISMutation):
     _mutation_class = "ProcessBatchMutation"
 
     class Input(OpenIMISMutation.Input):
-        location_id = graphene.Int()
+        location_id = graphene.Int(required=False)
         year = graphene.Int()
         month = graphene.Int()
 
@@ -104,7 +102,7 @@ class ProcessBatchMutation(OpenIMISMutation):
         if not user.has_perms(ClaimBatchConfig.gql_mutation_process_batch_perms):
             raise PermissionDenied(_("unauthorized"))
         submit = ProcessBatchSubmit(
-            location_id=data['location_id'],
+            location_id=data.get('location_id', None),
             year=data['year'],
             month=data['month']
         )
@@ -114,7 +112,9 @@ class ProcessBatchMutation(OpenIMISMutation):
 
 
 class Query(graphene.ObjectType):
-    batch_runs = DjangoFilterConnectionField(BatchRunGQLType)
+    batch_runs = OrderedDjangoFilterConnectionField(
+        BatchRunGQLType,
+        orderBy=graphene.List(of_type=graphene.String))
     batch_runs_summaries = graphene.relay.ConnectionField(
         BatchRunSummaryConnection,
         accountType=graphene.Int(),
@@ -146,11 +146,15 @@ class Query(graphene.ObjectType):
             r.RelCareType,
             convert(varchar, r.CalcDate, 23),
             r.RelIndex
-        FROM tblBatchRun b
-        LEFT JOIN tblLocations l on l.LocationId = b.LocationId
-        LEFT JOIN tblRelIndex r on r.LocationId = b.LocationId
-        LEFT JOIN tblProduct p on r.ProdId = p.ProdId
-        WHERE %s
+        FROM
+            tblRelIndex r,
+            tblLocations l,
+            tblBatchRun b,
+            tblProduct p
+        WHERE
+            r.LocationId = l.LocationId AND
+            l.LocationId = b.LocationId AND
+            r.ProdId = p.ProdId AND %s
         ORDER BY
             b.RunYear,
             b.RunMonth;
