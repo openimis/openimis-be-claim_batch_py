@@ -17,7 +17,6 @@ from django.utils.translation import gettext as _
 class BatchRunGQLType(DjangoObjectType):
     class Meta:
         model = BatchRun
-        exclude_fields = ('row_id',)
         interfaces = (graphene.relay.Node,)
         filter_fields = {
             "id": ["exact"],
@@ -74,7 +73,6 @@ class BatchRunSummaryConnection(graphene.Connection):
 class RelativeIndexGQLType(DjangoObjectType):
     class Meta:
         model = RelativeIndex
-        exclude_fields = ('row_id',)
         interfaces = (graphene.relay.Node,)
         filter_fields = {
             "id": ["exact"],

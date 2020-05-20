@@ -12,7 +12,7 @@ from django.db.models import Value, F, Sum
 from django.db.models.functions import Coalesce, ExtractMonth, ExtractYear
 from django.utils.translation import gettext as _
 from location.models import HealthFacility
-from product.models import ProductItem, Product, ProductService, ProductItemOrService
+from product.models import Product, ProductItemOrService
 
 logger = logging.getLogger(__name__)
 
