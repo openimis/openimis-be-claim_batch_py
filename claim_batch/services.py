@@ -65,7 +65,7 @@ class ProcessBatchService(object):
             while next:
                 try:
                     res = cur.fetchone()
-                except:
+                except Exception:
                     pass
                 finally:
                     next = cur.nextset()
@@ -350,6 +350,8 @@ def process_batch(audit_user_id, location_id, period, year):
 
     try:
         do_process_batch(audit_user_id, location_id, period, year)
+    except (KeyboardInterrupt, SystemExit):
+        raise
     except Exception as exc:
         logger.warning(
             f"Exception while processing batch user {audit_user_id}, location {location_id}, period {period}, year {year}",
@@ -399,7 +401,6 @@ def do_process_batch(audit_user_id, location_id, period, year):
             # Will fail with Ethiopian calendar but so will the rest of this procedure
             target_quarter = int((target_month - 1) / 3) + 1
 
-            index = -1
             if product["product__period_rel_prices"]:
                 prod_rel_price_type = product["product__period_rel_prices"]
             elif product["claim__health_facility__level"] == 'H' and product["product__period_rel_prices_ip"]:
@@ -543,7 +544,7 @@ def process_batch_report_data_with_claims(prms):
         while next:
             try:
                 data = cur.fetchall()
-            except:
+            except Exception:
                 pass
             finally:
                 next = cur.nextset()
@@ -603,7 +604,7 @@ def process_batch_report_data(prms):
         while next:
             try:
                 data = cur.fetchall()
-            except:
+            except Exception:
                 pass
             finally:
                 next = cur.nextset()
