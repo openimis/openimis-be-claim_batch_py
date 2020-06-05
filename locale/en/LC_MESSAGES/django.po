@@ -19,9 +19,9 @@ msgstr ""
 
 #: claim_batch/services.py:765
 msgid "claim_batch.reports.nodata"
-msgstr ""
+msgstr "No data in report"
 
 #: claim_batch/views.py:26 claim_batch/schema.py:101 claim_batch/schema.py:130
 #: claim_batch/schema.py:136 claim_batch/schema.py:177
 msgid "unauthorized"
-msgstr ""
+msgstr "User not authorized for this operation"
