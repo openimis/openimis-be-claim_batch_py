@@ -762,7 +762,7 @@ class ReportDataService(object):
         else:
             data = process_batch_report_data(prms)
         if not data:
-            raise ValueError(_("claim_batch.reports.nodata.TEST"))
+            raise ValueError(_("claim_batch.reports.nodata"))
         df = pd.DataFrame.from_dict(data)
         if group == "H":
             return add_sums_by_hf(data,
