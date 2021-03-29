@@ -348,7 +348,7 @@ def process_batch(audit_user_id, location_id, period, year):
         .filter(run_month=period) \
         .annotate(nn_location_id=Coalesce("location_id", Value(-1))) \
         .filter(nn_location_id=-1 if location_id is None else location_id) \
-        .filter(validity_to__isnull=False).values("id").first()
+        .filter(validity_to__isnull=True).values("id").first()
 
     if already_run_batch:
         return [str(ProcessBatchSubmitError(2))]
@@ -574,7 +574,10 @@ def do_process_batch(audit_user_id, location_id, period, year):
             'year': year,
             'month': period,
         }
-        process_comission_payment_data(params)
+        is_report_data_available = get_commision_payment_report_data(params)
+        if not is_report_data_available:
+            logger.debug(F"Capitation payment data for {params} already exists")
+            process_capitation_payment_data(params)
 
 
 def _get_relative_index(product_id, relative_period, relative_year, relative_care_type='B', relative_type=12):
@@ -695,7 +698,7 @@ def process_batch_report_data(prms):
     } for row in data]
 
 
-def process_comission_payment_data(params):
+def process_capitation_payment_data(params):
     with connection.cursor() as cur:
         # HFLevel based on
         # https://github.com/openimis/web_app_vb/blob/2492c20d8959e39775a2dd4013d2fda8feffd01c/IMIS_BL/HealthFacilityBL.vb#L77
@@ -706,7 +709,7 @@ def process_comission_payment_data(params):
             INSERT INTO @HF (Code, Name) VALUES ('C', 'Health Centre');
             INSERT INTO @HF (Code, Name) VALUES ('H', 'Hospital');
 
-            EXEC [dbo].[uspSSRSCapitationPaymentNew]
+            EXEC [dbo].[uspCreateCapitationPaymentReportData]
                 @RegionId = %s,
                 @DistrictId = %s,
                 @ProdId = %s,
@@ -721,18 +724,6 @@ def process_comission_payment_data(params):
             params.get('year', 0),
             params.get('month', 0),
         ))
-        # stored proc outputs several results,
-        # we are only interested in the last one
-        next = True
-        data = None
-        while next:
-            try:
-                data = cur.fetchall()
-            except Exception as e:
-                pass
-            finally:
-                next = cur.nextset()
-    return data
 
 
 def get_commision_payment_report_data(params):
@@ -746,7 +737,7 @@ def get_commision_payment_report_data(params):
             INSERT INTO @HF (Code, Name) VALUES ('C', 'Health Centre');
             INSERT INTO @HF (Code, Name) VALUES ('H', 'Hospital');
 
-            EXEC [dbo].[uspSSRSCapitationPaymentReceive]
+            EXEC [dbo].[uspSSRSRetrieveCapitationPaymentReportData]
                 @RegionId = %s,
                 @DistrictId = %s,
                 @ProdId = %s,
