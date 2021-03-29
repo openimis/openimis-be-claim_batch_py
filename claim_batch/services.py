@@ -576,8 +576,9 @@ def do_process_batch(audit_user_id, location_id, period, year):
         }
         is_report_data_available = get_commision_payment_report_data(params)
         if not is_report_data_available:
-            logger.debug(F"Capitation payment data for {params} already exists")
             process_capitation_payment_data(params)
+        else:
+            logger.debug(F"Capitation payment data for {params} already exists")
 
 
 def _get_relative_index(product_id, relative_period, relative_year, relative_care_type='B', relative_type=12):
@@ -702,56 +703,15 @@ def process_capitation_payment_data(params):
     with connection.cursor() as cur:
         # HFLevel based on
         # https://github.com/openimis/web_app_vb/blob/2492c20d8959e39775a2dd4013d2fda8feffd01c/IMIS_BL/HealthFacilityBL.vb#L77
-        sql = """\
-            DECLARE @HF AS xAttributeV;
-            
-            INSERT INTO @HF (Code, Name) VALUES ('D', 'Dispensary');
-            INSERT INTO @HF (Code, Name) VALUES ('C', 'Health Centre');
-            INSERT INTO @HF (Code, Name) VALUES ('H', 'Hospital');
-
-            EXEC [dbo].[uspCreateCapitationPaymentReportData]
-                @RegionId = %s,
-                @DistrictId = %s,
-                @ProdId = %s,
-                @Year = %s,
-                @Month = %s,	
-                @HFLevel = @HF
-        """
-        cur.execute(sql, (
-            params.get('region_id', None),
-            params.get('district_id', None),
-            params.get('prod_id', 0),
-            params.get('year', 0),
-            params.get('month', 0),
-        ))
+        _execute_capitation_payment_procedure(cur, 'uspCreateCapitationPaymentReportData', params)
 
 
 def get_commision_payment_report_data(params):
     with connection.cursor() as cur:
         # HFLevel based on
         # https://github.com/openimis/web_app_vb/blob/2492c20d8959e39775a2dd4013d2fda8feffd01c/IMIS_BL/HealthFacilityBL.vb#L77
-        sql = """\
-            DECLARE @HF AS xAttributeV;
-            
-            INSERT INTO @HF (Code, Name) VALUES ('D', 'Dispensary');
-            INSERT INTO @HF (Code, Name) VALUES ('C', 'Health Centre');
-            INSERT INTO @HF (Code, Name) VALUES ('H', 'Hospital');
+        _execute_capitation_payment_procedure(cur, 'uspSSRSRetrieveCapitationPaymentReportData', params)
 
-            EXEC [dbo].[uspSSRSRetrieveCapitationPaymentReportData]
-                @RegionId = %s,
-                @DistrictId = %s,
-                @ProdId = %s,
-                @Year = %s,
-                @Month = %s,	
-                @HFLevel = @HF
-        """
-        cur.execute(sql, (
-            params.get('region_id', None),
-            params.get('district_id', None),
-            params.get('prod_id', 0),
-            params.get('year', 0),
-            params.get('month', 0),
-        ))
         # stored proc outputs several results,
         # we are only interested in the last one
         next = True
@@ -764,6 +724,32 @@ def get_commision_payment_report_data(params):
             finally:
                 next = cur.nextset()
     return data
+
+
+def _execute_capitation_payment_procedure(cursor, procedure, params):
+    sql = F"""\
+                DECLARE @HF AS xAttributeV;
+
+                INSERT INTO @HF (Code, Name) VALUES ('D', 'Dispensary');
+                INSERT INTO @HF (Code, Name) VALUES ('C', 'Health Centre');
+                INSERT INTO @HF (Code, Name) VALUES ('H', 'Hospital');
+
+                EXEC [dbo].[{procedure}]
+                    @RegionId = %s,
+                    @DistrictId = %s,
+                    @ProdId = %s,
+                    @Year = %s,
+                    @Month = %s,	
+                    @HFLevel = @HF
+            """
+
+    cursor.execute(sql, (
+        params.get('region_id', None),
+        params.get('district_id', None),
+        params.get('prod_id', 0),
+        params.get('year', 0),
+        params.get('month', 0),
+    ))
 
 
 def regions_sum(df, show_claims):
