@@ -555,7 +555,7 @@ def do_process_batch(audit_user_id, location_id, period, year):
     for svc_item in [ClaimItem, ClaimService]:
         capitation_payment_products.extend(
             svc_item.objects
-                    .filter(claim__status__in=[Claim.STATUS_PROCESSED, Claim.STATUS_VALUATED])
+                    .filter(claim__status=Claim.STATUS_VALUATED)
                     .filter(claim__validity_to__isnull=True)
                     .filter(validity_to__isnull=True)
                     .filter(status=svc_item.STATUS_PASSED)
