@@ -6,12 +6,12 @@ import logging
 import core
 import pandas as pd
 from claim.models import ClaimItem, Claim, ClaimService, ClaimDetail
-from claim_batch.models import BatchRun, RelativeIndex, RelativeDistribution
+from claim_batch.models import BatchRun, RelativeIndex, RelativeDistribution, CapitationPayment
 from django.db import connection, transaction
 from django.db.models import Value, F, Sum
 from django.db.models.functions import Coalesce, ExtractMonth, ExtractYear
 from django.utils.translation import gettext as _
-from location.models import HealthFacility
+from location.models import HealthFacility, Location
 from product.models import Product, ProductItemOrService
 
 logger = logging.getLogger(__name__)
@@ -348,7 +348,7 @@ def process_batch(audit_user_id, location_id, period, year):
         .filter(run_month=period) \
         .annotate(nn_location_id=Coalesce("location_id", Value(-1))) \
         .filter(nn_location_id=-1 if location_id is None else location_id) \
-        .filter(validity_to__isnull=False).values("id").first()
+        .filter(validity_to__isnull=True).values("id").first()
 
     if already_run_batch:
         return [str(ProcessBatchSubmitError(2))]
@@ -363,6 +363,23 @@ def process_batch(audit_user_id, location_id, period, year):
             exc_info=True
         )
         return [str(ProcessBatchSubmitError(-1, str(exc)))]
+
+
+def _get_capitation_region_and_district(location_id):
+    if not location_id:
+        return None, None
+    location = Location.objects.get(id=location_id)
+    region_id = None
+    district_id = None
+
+    if location.type == 'D':
+        district_id = location_id
+        region_id = location.parent.id
+    elif location.type == 'R':
+        region_id = location.id
+
+    return region_id, district_id
+
 
 
 def do_process_batch(audit_user_id, location_id, period, year):
@@ -534,6 +551,35 @@ def do_process_batch(audit_user_id, location_id, period, year):
             .update(batch_run=created_run)
         logger.debug("do_process_batch updated claims *range* with batch run ref %s", updated_count)
 
+    capitation_payment_products = []
+    for svc_item in [ClaimItem, ClaimService]:
+        capitation_payment_products.extend(
+            svc_item.objects
+                    .filter(claim__status=Claim.STATUS_VALUATED)
+                    .filter(claim__validity_to__isnull=True)
+                    .filter(validity_to__isnull=True)
+                    .filter(status=svc_item.STATUS_PASSED)
+                    .annotate(prod_location=Coalesce("product__location_id", Value(-1)))
+                    .filter(prod_location=location_id if location_id else -1)
+                    .values('product_id')
+                    .distinct()
+        )
+
+    region_id, district_id = _get_capitation_region_and_district(location_id)
+    for product in set(map(lambda x: x['product_id'], capitation_payment_products)):
+        params = {
+            'region_id': region_id,
+            'district_id': district_id,
+            'prod_id': product,
+            'year': year,
+            'month': period,
+        }
+        is_report_data_available = get_commision_payment_report_data(params)
+        if not is_report_data_available:
+            process_capitation_payment_data(params)
+        else:
+            logger.debug(F"Capitation payment data for {params} already exists")
+
 
 def _get_relative_index(product_id, relative_period, relative_year, relative_care_type='B', relative_type=12):
     qs = RelativeIndex.objects \
@@ -651,6 +697,59 @@ def process_batch_report_data(prms):
         "AccCodeRemuneration": row[7],
         "AccCode": row[8]
     } for row in data]
+
+
+def process_capitation_payment_data(params):
+    with connection.cursor() as cur:
+        # HFLevel based on
+        # https://github.com/openimis/web_app_vb/blob/2492c20d8959e39775a2dd4013d2fda8feffd01c/IMIS_BL/HealthFacilityBL.vb#L77
+        _execute_capitation_payment_procedure(cur, 'uspCreateCapitationPaymentReportData', params)
+
+
+def get_commision_payment_report_data(params):
+    with connection.cursor() as cur:
+        # HFLevel based on
+        # https://github.com/openimis/web_app_vb/blob/2492c20d8959e39775a2dd4013d2fda8feffd01c/IMIS_BL/HealthFacilityBL.vb#L77
+        _execute_capitation_payment_procedure(cur, 'uspSSRSRetrieveCapitationPaymentReportData', params)
+
+        # stored proc outputs several results,
+        # we are only interested in the last one
+        next = True
+        data = None
+        while next:
+            try:
+                data = cur.fetchall()
+            except Exception as e:
+                pass
+            finally:
+                next = cur.nextset()
+    return data
+
+
+def _execute_capitation_payment_procedure(cursor, procedure, params):
+    sql = F"""\
+                DECLARE @HF AS xAttributeV;
+
+                INSERT INTO @HF (Code, Name) VALUES ('D', 'Dispensary');
+                INSERT INTO @HF (Code, Name) VALUES ('C', 'Health Centre');
+                INSERT INTO @HF (Code, Name) VALUES ('H', 'Hospital');
+
+                EXEC [dbo].[{procedure}]
+                    @RegionId = %s,
+                    @DistrictId = %s,
+                    @ProdId = %s,
+                    @Year = %s,
+                    @Month = %s,	
+                    @HFLevel = @HF
+            """
+
+    cursor.execute(sql, (
+        params.get('region_id', None),
+        params.get('district_id', None),
+        params.get('prod_id', 0),
+        params.get('year', 0),
+        params.get('month', 0),
+    ))
 
 
 def regions_sum(df, show_claims):
