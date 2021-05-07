@@ -1,9 +1,9 @@
 import graphene
 from django.core.exceptions import PermissionDenied
 from django.db import connection
-from core import prefix_filterset, ExtendedConnection, filter_validity
-from core.schema import TinyInt, SmallInt, OpenIMISMutation, OrderedDjangoFilterConnectionField
-from graphene import InputObjectType, ObjectType
+from core import prefix_filterset, ExtendedConnection
+from core.schema import OpenIMISMutation, OrderedDjangoFilterConnectionField
+from graphene import ObjectType
 from graphene_django import DjangoObjectType
 from graphene_django.filter import DjangoFilterConnectionField
 from product.schema import ProductGQLType
@@ -17,7 +17,6 @@ from django.utils.translation import gettext as _
 class BatchRunGQLType(DjangoObjectType):
     class Meta:
         model = BatchRun
-        exclude_fields = ('row_id',)
         interfaces = (graphene.relay.Node,)
         filter_fields = {
             "id": ["exact"],
@@ -67,14 +66,13 @@ class BatchRunSummaryConnection(graphene.Connection):
 
     total_count = graphene.Int()
 
-    def resolve_total_count(root, info, **kwargs):
-        return len(root.iterable)
+    def resolve_total_count(self, info, **kwargs):
+        return len(self.iterable)
 
 
 class RelativeIndexGQLType(DjangoObjectType):
     class Meta:
         model = RelativeIndex
-        exclude_fields = ('row_id',)
         interfaces = (graphene.relay.Node,)
         filter_fields = {
             "id": ["exact"],

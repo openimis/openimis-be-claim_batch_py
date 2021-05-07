@@ -6,13 +6,13 @@ import logging
 import core
 import pandas as pd
 from claim.models import ClaimItem, Claim, ClaimService, ClaimDetail
-from claim_batch.models import BatchRun, RelativeIndex, RelativeDistribution
+from claim_batch.models import BatchRun, RelativeIndex, RelativeDistribution, CapitationPayment
 from django.db import connection, transaction
 from django.db.models import Value, F, Sum
 from django.db.models.functions import Coalesce, ExtractMonth, ExtractYear
 from django.utils.translation import gettext as _
-from location.models import HealthFacility
-from product.models import ProductItem, Product, ProductService, ProductItemOrService
+from location.models import HealthFacility, Location
+from product.models import Product, ProductItemOrService
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +65,7 @@ class ProcessBatchService(object):
             while next:
                 try:
                     res = cur.fetchone()
-                except:
+                except Exception:
                     pass
                 finally:
                     next = cur.nextset()
@@ -90,26 +90,26 @@ def relative_index_calculation_monthly(rel_type, period, year, location_id, prod
     else:
         raise Exception("relative type should be month(12), quarter(4) or year(1)")
 
-    for month in range(month_start, month_end + 1):
-        with transaction.atomic():
-            date = datetime.date(year, period, 1)
-            # We don't import the localized calendar because this process is currently based on gregorian calendar
-            _, days_in_month = calendar.monthrange(year, period)
-            end_date = datetime.date(year, period, days_in_month)
+    with transaction.atomic():
+        date = datetime.date(year, period, 1)
+        # We don't import the localized calendar because this process is currently based on gregorian calendar
+        _, days_in_month = calendar.monthrange(year, period)
+        end_date = datetime.date(year, period, days_in_month)
 
-            # For some reason the temp table is not always deleted when we arrive here, so we generate a random name
-            table_name = "#Numerator" + uuid.uuid4().hex
-            cursor = connection.cursor()
-            cursor.execute(f"""
-            CREATE TABLE {table_name}
-            (
-                LocationId int,
-                ProdID     int,
-                Value      decimal(18, 2),
-                WorkValue  int
-            )
-            """)
+        # For some reason the temp table is not always deleted when we arrive here, so we generate a random name
+        table_name = "#Numerator" + uuid.uuid4().hex
+        cursor = connection.cursor()
+        cursor.execute(f"""
+        CREATE TABLE {table_name}
+        (
+            LocationId int,
+            ProdID     int,
+            Value      decimal(18, 2),
+            WorkValue  int
+        )
+        """)
 
+        for month in range(month_start, month_end + 1):
             # insert into numerator (location_id, product_id, value, work_value)
             # The Django approach to that query doesn't work in Django 2 as it needs a boolean condition on the F in When
             # Policy.objects\
@@ -230,52 +230,57 @@ def relative_index_calculation_monthly(rel_type, period, year, location_id, prod
                            AND (Prod.ProdID=%s or %s=0)
                            AND PL.PolicyStatus <> 1
                            AND PR.PayDate <= PL.ExpiryDate
-
+    
                          GROUP BY L.LocationId, Prod.ProdID, PR.Amount, PR.PayDate, PL.ExpiryDate, PL.EffectiveDate
                      ) NumValue
                 GROUP BY LocationId, ProdID
             """
             cursor.execute(sql, params)
 
-            cursor.execute(f"""
-                INSERT INTO {table_name} (LocationId, ProdID, Value, WorkValue)
-                SELECT LocationId, ProdID, ISNULL(SUM(Value), 0) Allocated, 0
-                FROM {table_name}
-                GROUP BY LocationId, ProdID
-            """)
-            cursor.execute(f"""
-                DELETE FROM {table_name} WHERE WorkValue = 1
-            """)
+        # The above query was run for each month in range with WorkValue=1. We group the data with WorkValue=0
+        # and then delete the =1 data.
+        cursor.execute(f"""
+            INSERT INTO {table_name} (LocationId, ProdID, Value, WorkValue)
+            SELECT LocationId, ProdID, ISNULL(SUM(Value), 0) Allocated, 0
+            FROM {table_name}
+            GROUP BY LocationId, ProdID
+        """)
+        cursor.execute(f"""
+            DELETE FROM {table_name} WHERE WorkValue = 1
+        """)
 
-            cursor.execute(f"SELECT ProdID, Value FROM {table_name}")
-            rel_price_mapping = [
-                ("period_rel_prices", "B"),
-                ("period_rel_prices_ip", "I"),
-                ("period_rel_prices_op", "O")
-            ]
-            for prod_id, prod_value in cursor.fetchall():
-                product = Product.objects.filter(id=prod_id).first()
-                if rel_type == RelativeIndex.TYPE_MONTH:
-                    for rel_price_item, rel_price_type in rel_price_mapping:
-                        if product and getattr(product, rel_price_item) == Product.RELATIVE_PRICE_PERIOD_MONTH:
-                            create_relative_index(prod_id, prod_value, year, rel_type, location_id, audit_user_id,
-                                                  rel_price_type, period=period)
+        cursor.execute(f"SELECT ProdID, Value FROM {table_name}")
+        rel_price_mapping = [
+            ("period_rel_prices", "B"),
+            ("period_rel_prices_ip", "I"),
+            ("period_rel_prices_op", "O")
+        ]
+        for prod_id, prod_value in cursor.fetchall():
+            product = Product.objects.filter(id=prod_id).first()
+            if rel_type == RelativeIndex.TYPE_MONTH:
+                for rel_price_item, rel_price_type in rel_price_mapping:
+                    if product and getattr(product, rel_price_item) == Product.RELATIVE_PRICE_PERIOD_MONTH:
+                        create_relative_index(prod_id, prod_value, year, rel_type, location_id, audit_user_id,
+                                              rel_price_type, period=period)
 
-                if rel_type == RelativeIndex.TYPE_QUARTER:
-                    for rel_price_item, rel_price_type in rel_price_mapping:
-                        if product and getattr(product, rel_price_item) == Product.RELATIVE_PRICE_PERIOD_QUARTER:
-                            create_relative_index(prod_id, prod_value, year, rel_type, location_id, audit_user_id,
-                                                  rel_price_type, month_start=month_start, month_end=month_end)
+            if rel_type == RelativeIndex.TYPE_QUARTER:
+                for rel_price_item, rel_price_type in rel_price_mapping:
+                    if product and getattr(product, rel_price_item) == Product.RELATIVE_PRICE_PERIOD_QUARTER:
+                        create_relative_index(prod_id, prod_value, year, rel_type, location_id, audit_user_id,
+                                              rel_price_type, month_start=month_start, month_end=month_end)
 
-                if rel_type == RelativeIndex.TYPE_YEAR:
-                    for rel_price_item, rel_price_type in rel_price_mapping:
-                        if product and getattr(product, rel_price_item) == Product.RELATIVE_PRICE_PERIOD_YEAR:
-                            create_relative_index(prod_id, prod_value, year, rel_type, location_id, audit_user_id,
-                                                  rel_price_type)
+            if rel_type == RelativeIndex.TYPE_YEAR:
+                for rel_price_item, rel_price_type in rel_price_mapping:
+                    if product and getattr(product, rel_price_item) == Product.RELATIVE_PRICE_PERIOD_YEAR:
+                        create_relative_index(prod_id, prod_value, year, rel_type, location_id, audit_user_id,
+                                              rel_price_type)
 
 
 def create_relative_index(prod_id, prod_value, year, relative_type, location_id, audit_user_id, rel_price_type,
                           period=None, month_start=None, month_end=None):
+    logger.debug ("Creating relative index for product %s with value %s on year %s, type %s, location %s, "
+                 "rel_price_type %s, period %s, month range %s-%s", prod_id, prod_value, year, relative_type,
+                 location_id, rel_price_type, period, month_start, month_end)
     distr = RelativeDistribution.objects \
         .filter(product_id=prod_id) \
         .filter(period=period) \
@@ -321,7 +326,7 @@ def create_relative_index(prod_id, prod_value, year, relative_type, location_id,
     return RelativeIndex.objects.create(
         product_id=prod_id,
         type=relative_type,
-        care_type=RelativeIndex.CARE_TYPE_IN_PATIENT,
+        care_type=rel_price_type,
         year=year,
         period=period,
         calc_date=TimeUtils.now(),
@@ -343,13 +348,15 @@ def process_batch(audit_user_id, location_id, period, year):
         .filter(run_month=period) \
         .annotate(nn_location_id=Coalesce("location_id", Value(-1))) \
         .filter(nn_location_id=-1 if location_id is None else location_id) \
-        .filter(validity_to__isnull=False).values("id").first()
+        .filter(validity_to__isnull=True).values("id").first()
 
     if already_run_batch:
         return [str(ProcessBatchSubmitError(2))]
 
     try:
         do_process_batch(audit_user_id, location_id, period, year)
+    except (KeyboardInterrupt, SystemExit):
+        raise
     except Exception as exc:
         logger.warning(
             f"Exception while processing batch user {audit_user_id}, location {location_id}, period {period}, year {year}",
@@ -358,25 +365,51 @@ def process_batch(audit_user_id, location_id, period, year):
         return [str(ProcessBatchSubmitError(-1, str(exc)))]
 
 
+def _get_capitation_region_and_district(location_id):
+    if not location_id:
+        return None, None
+    location = Location.objects.get(id=location_id)
+    region_id = None
+    district_id = None
+
+    if location.type == 'D':
+        district_id = location_id
+        region_id = location.parent.id
+    elif location.type == 'R':
+        region_id = location.id
+
+    return region_id, district_id
+
+
+
 def do_process_batch(audit_user_id, location_id, period, year):
+    processed_ids = set()  # As we update claims, we add the claims not in relative pricing and then update the status
+    logger.debug("do_process_batch location %s for %s/%s", location_id, period, year)
     relative_index_calculation_monthly(rel_type=12, period=period, year=year, location_id=location_id, product_id=0,
                                        audit_user_id=audit_user_id)
     if period == 3:
+        logger.debug("do_process_batch generating Q1")
         relative_index_calculation_monthly(rel_type=4, period=1, year=year, location_id=location_id, product_id=0,
                                            audit_user_id=audit_user_id)
     if period == 6:
+        logger.debug("do_process_batch generating Q2")
         relative_index_calculation_monthly(rel_type=4, period=2, year=year, location_id=location_id, product_id=0,
                                            audit_user_id=audit_user_id)
     if period == 9:
+        logger.debug("do_process_batch generating Q2")
         relative_index_calculation_monthly(rel_type=4, period=3, year=year, location_id=location_id, product_id=0,
                                            audit_user_id=audit_user_id)
     if period == 12:
+        logger.debug("do_process_batch generating Q4 and Year")
         relative_index_calculation_monthly(rel_type=4, period=4, year=year, location_id=location_id, product_id=0,
                                            audit_user_id=audit_user_id)
         relative_index_calculation_monthly(rel_type=1, period=1, year=year, location_id=location_id, product_id=0,
                                            audit_user_id=audit_user_id)
 
+
     for svc_item in [ClaimItem, ClaimService]:
+        logger.debug("do_process_batch Checking %s",
+                        "ClaimItem" if isinstance(svc_item, ClaimItem) else "ClaimService")
         prod_qs = svc_item.objects \
             .filter(claim__status=Claim.STATUS_PROCESSED) \
             .filter(claim__validity_to__isnull=True) \
@@ -391,7 +424,7 @@ def do_process_batch(audit_user_id, location_id, period, year):
             "product__period_rel_prices_op",
             "product__period_rel_prices_ip", "claim__process_stamp__month", "claim__process_stamp__year") \
             .distinct()
-
+        logger.debug("do_process_batch queried")
         for product in product_loop:
             index = -1
             target_month = product["claim__process_stamp__month"]
@@ -399,32 +432,44 @@ def do_process_batch(audit_user_id, location_id, period, year):
             # Will fail with Ethiopian calendar but so will the rest of this procedure
             target_quarter = int((target_month - 1) / 3) + 1
 
-            index = -1
+            logger.debug("do_process_batch target %s/%s Q%s", target_month, target_year, target_quarter)
             if product["product__period_rel_prices"]:
+                logger.debug("do_process_batch period_rel_prices %s", product["product__period_rel_prices"])
                 prod_rel_price_type = product["product__period_rel_prices"]
             elif product["claim__health_facility__level"] == 'H' and product["product__period_rel_prices_ip"]:
+                logger.debug("do_process_batch product__period_rel_prices_ip %s", product["product__period_rel_prices_ip"])
                 prod_rel_price_type = product["product__period_rel_prices_ip"]
             elif product["claim__health_facility__level"] != 'H' and product["product__period_rel_prices_op"]:
+                logger.debug("do_process_batch product__period_rel_prices_op %s", product["product__period_rel_prices_op"])
                 prod_rel_price_type = product["product__period_rel_prices_op"]
             else:
+                logger.error(f"product {product['product_id']} has an impossible in/out patient or both")
                 raise Exception(f"product {product['product_id']} has an impossible in/out patient or both")
 
-            if prod_rel_price_type == RelativeIndex.TYPE_MONTH:
+            if prod_rel_price_type == Product.RELATIVE_PRICE_PERIOD_MONTH:
+                logger.debug("do_process_batch Month")
                 index = _get_relative_index(product["product_id"], target_month, target_year,
                                             RelativeIndex.CARE_TYPE_BOTH,
                                             RelativeIndex.TYPE_MONTH)
-            if prod_rel_price_type == RelativeIndex.TYPE_QUARTER:
+            if prod_rel_price_type == Product.RELATIVE_PRICE_PERIOD_QUARTER:
+                logger.debug("do_process_batch Quarter")
                 index = _get_relative_index(product["product_id"], target_quarter, target_year,
                                             RelativeIndex.CARE_TYPE_BOTH, RelativeIndex.TYPE_QUARTER)
-            if prod_rel_price_type == RelativeIndex.TYPE_YEAR:
+            if prod_rel_price_type == Product.RELATIVE_PRICE_PERIOD_YEAR:
+                logger.debug("do_process_batch Year")
                 index = _get_relative_index(product["product_id"], None, target_year, RelativeIndex.CARE_TYPE_BOTH,
                                             RelativeIndex.TYPE_YEAR)
+            if prod_rel_price_type not in (Product.RELATIVE_PRICE_PERIOD_MONTH, Product.RELATIVE_PRICE_PERIOD_QUARTER,
+                                           Product.RELATIVE_PRICE_PERIOD_YEAR):
+                logger.error("do_process_batch invalid value for prod_rel_price_type %s", prod_rel_price_type)
 
             if index > -1:
-                prod_qs \
+                to_update_qs = prod_qs \
                     .filter(claim__health_facility__level=product["claim__health_facility__level"]) \
-                    .filter(product_id=product["product_id"]) \
-                    .update(remunerated_amount=F(F("price_valuated") * index))
+                    .filter(product_id=product["product_id"])
+                processed_ids.update(to_update_qs.values_list("claim_id", flat=True).distinct())
+                updated_count = to_update_qs.update(remunerated_amount=F("price_valuated") * index)
+                logger.debug("do_process_batch updated remunerated_amount count %s", updated_count)
 
     # Get all the claims in valuated state with no Relative index /Services
     def filter_valuated_claims(base):
@@ -443,8 +488,9 @@ def do_process_batch(audit_user_id, location_id, period, year):
 
     item_ids = filter_valuated_claims(ClaimItem)
     service_ids = filter_valuated_claims(ClaimService)
+    logger.debug("do_process_batch item/service counts: %s/%s", item_ids.count(), service_ids.count())  # TODO remove to reduce queries
 
-    all_ids = item_ids.union(service_ids).distinct().values_list("id", flat=True)
+    processed_ids.update(item_ids.union(service_ids).distinct().values_list("id", flat=True))
 
     def filter_item_or_service(base):
         return base.objects \
@@ -461,19 +507,20 @@ def do_process_batch(audit_user_id, location_id, period, year):
     item_prod_ids = filter_item_or_service(ClaimItem)
     service_prod_ids = filter_item_or_service(ClaimService)
 
-    Claim.objects \
+    updated_count = Claim.objects \
         .filter(status=Claim.STATUS_PROCESSED) \
-        .filter(id__in=all_ids) \
+        .filter(id__in=processed_ids) \
         .filter(validity_to__isnull=True) \
         .exclude(id__in=item_prod_ids) \
         .exclude(id__in=service_prod_ids) \
         .update(status=Claim.STATUS_VALUATED)
+    logger.debug("do_process_batch update claims: %s", updated_count)
 
     from core.utils import TimeUtils
     created_run = BatchRun.objects.create(location_id=location_id, run_year=year, run_month=period,
                                           run_date=TimeUtils.now(), audit_user_id=audit_user_id,
                                           validity_from=TimeUtils.now())
-
+    logger.debug("do_process_batch created run: %s", created_run.id)
     month_start = 0
     month_end = 0
     if period in (3, 6, 9):
@@ -485,21 +532,53 @@ def do_process_batch(audit_user_id, location_id, period, year):
 
     # Link claims to this batch run
     filter_base = Claim.objects \
-        .filter(id__in=all_ids) \
+        .filter(id__in=processed_ids) \
         .filter(status=Claim.STATUS_VALUATED) \
         .filter(batch_run_id__isnull=True) \
         .filter(process_stamp__year=year)
 
-    filter_base \
+    updated_count = filter_base \
         .filter(process_stamp__month=period) \
         .update(batch_run=created_run)
 
+    logger.debug("do_process_batch updated claims with batch run ref %s", updated_count)
+
     # If more than a month was run
     if month_start > 0:
-        filter_base \
+        updated_count = filter_base \
             .filter(process_stamp__month__gte=month_start) \
             .filter(process_stamp__month__lte=month_end) \
             .update(batch_run=created_run)
+        logger.debug("do_process_batch updated claims *range* with batch run ref %s", updated_count)
+
+    capitation_payment_products = []
+    for svc_item in [ClaimItem, ClaimService]:
+        capitation_payment_products.extend(
+            svc_item.objects
+                    .filter(claim__status=Claim.STATUS_VALUATED)
+                    .filter(claim__validity_to__isnull=True)
+                    .filter(validity_to__isnull=True)
+                    .filter(status=svc_item.STATUS_PASSED)
+                    .annotate(prod_location=Coalesce("product__location_id", Value(-1)))
+                    .filter(prod_location=location_id if location_id else -1)
+                    .values('product_id')
+                    .distinct()
+        )
+
+    region_id, district_id = _get_capitation_region_and_district(location_id)
+    for product in set(map(lambda x: x['product_id'], capitation_payment_products)):
+        params = {
+            'region_id': region_id,
+            'district_id': district_id,
+            'prod_id': product,
+            'year': year,
+            'month': period,
+        }
+        is_report_data_available = get_commision_payment_report_data(params)
+        if not is_report_data_available:
+            process_capitation_payment_data(params)
+        else:
+            logger.debug(F"Capitation payment data for {params} already exists")
 
 
 def _get_relative_index(product_id, relative_period, relative_year, relative_care_type='B', relative_type=12):
@@ -543,7 +622,7 @@ def process_batch_report_data_with_claims(prms):
         while next:
             try:
                 data = cur.fetchall()
-            except:
+            except Exception:
                 pass
             finally:
                 next = cur.nextset()
@@ -603,7 +682,7 @@ def process_batch_report_data(prms):
         while next:
             try:
                 data = cur.fetchall()
-            except:
+            except Exception:
                 pass
             finally:
                 next = cur.nextset()
@@ -618,6 +697,59 @@ def process_batch_report_data(prms):
         "AccCodeRemuneration": row[7],
         "AccCode": row[8]
     } for row in data]
+
+
+def process_capitation_payment_data(params):
+    with connection.cursor() as cur:
+        # HFLevel based on
+        # https://github.com/openimis/web_app_vb/blob/2492c20d8959e39775a2dd4013d2fda8feffd01c/IMIS_BL/HealthFacilityBL.vb#L77
+        _execute_capitation_payment_procedure(cur, 'uspCreateCapitationPaymentReportData', params)
+
+
+def get_commision_payment_report_data(params):
+    with connection.cursor() as cur:
+        # HFLevel based on
+        # https://github.com/openimis/web_app_vb/blob/2492c20d8959e39775a2dd4013d2fda8feffd01c/IMIS_BL/HealthFacilityBL.vb#L77
+        _execute_capitation_payment_procedure(cur, 'uspSSRSRetrieveCapitationPaymentReportData', params)
+
+        # stored proc outputs several results,
+        # we are only interested in the last one
+        next = True
+        data = None
+        while next:
+            try:
+                data = cur.fetchall()
+            except Exception as e:
+                pass
+            finally:
+                next = cur.nextset()
+    return data
+
+
+def _execute_capitation_payment_procedure(cursor, procedure, params):
+    sql = F"""\
+                DECLARE @HF AS xAttributeV;
+
+                INSERT INTO @HF (Code, Name) VALUES ('D', 'Dispensary');
+                INSERT INTO @HF (Code, Name) VALUES ('C', 'Health Centre');
+                INSERT INTO @HF (Code, Name) VALUES ('H', 'Hospital');
+
+                EXEC [dbo].[{procedure}]
+                    @RegionId = %s,
+                    @DistrictId = %s,
+                    @ProdId = %s,
+                    @Year = %s,
+                    @Month = %s,	
+                    @HFLevel = @HF
+            """
+
+    cursor.execute(sql, (
+        params.get('region_id', None),
+        params.get('district_id', None),
+        params.get('prod_id', 0),
+        params.get('year', 0),
+        params.get('month', 0),
+    ))
 
 
 def regions_sum(df, show_claims):
