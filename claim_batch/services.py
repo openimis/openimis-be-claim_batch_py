@@ -734,16 +734,16 @@ def _execute_capitation_payment_procedure(cursor, procedure, params):
                 INSERT INTO @HF (Code, Name) VALUES ('C', 'Health Centre');
                 INSERT INTO @HF (Code, Name) VALUES ('H', 'Hospital');
 
-                EXEC [dbo].[{procedure}]
+                EXEC [dbo].[%s]
                     @RegionId = %s,
                     @DistrictId = %s,
                     @ProdId = %s,
                     @Year = %s,
                     @Month = %s,	
-                    @HFLevel = @HF
+                    @HFLevel = @HF;
             """
 
-    cursor.execute(sql, (
+    cursor.execute(sql, ( procedure
         params.get('region_id', None),
         params.get('district_id', None),
         params.get('prod_id', 0),
