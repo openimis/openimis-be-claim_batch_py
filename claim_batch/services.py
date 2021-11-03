@@ -72,8 +72,36 @@ class ProcessBatchService(object):
                     pass
                 finally:
                     next = cur.nextset()
-            if res[0]:  # zero means "all done"
-                raise ProcessBatchSubmitError(res[0])
+            if res[0] != 0:  # zero means "all done"
+                return str([ProcessBatchSubmitError(res[0])])
+        capitation_payment_products = []
+        for svc_item in [ClaimItem, ClaimService]:
+            capitation_payment_products.extend(
+                svc_item.objects
+                    .filter(claim__status=Claim.STATUS_VALUATED)
+                    .filter(claim__validity_to__isnull=True)
+                    .filter(validity_to__isnull=True)
+                    .filter(status=svc_item.STATUS_PASSED)
+                    .annotate(prod_location=Coalesce("product__location_id", Value(-1)))
+                    .filter(prod_location=submit.location_id if submit.location_id else -1)
+                    .values('product_id')
+                    .distinct()
+            )
+
+        region_id, district_id = _get_capitation_region_and_district(submit.location_id)
+        for product in set(map(lambda x: x['product_id'], capitation_payment_products)):
+            params = {
+                'region_id': region_id,
+                'district_id': district_id,
+                'prod_id': product,
+                'year': submit.year,
+                'month': submit.month,
+            }
+            is_report_data_available = get_commision_payment_report_data(params)
+            if not is_report_data_available:
+                process_capitation_payment_data(params)
+            else:
+                logger.debug(F"Capitation payment data for {params} already exists")
 
     @classmethod
     def batch_run_already_executed(cls, year, month, location_id):
@@ -243,7 +271,7 @@ def relative_index_calculation_monthly(rel_type, period, year, location_id, prod
                            AND (Prod.ProdID=%s or %s=0)
                            AND PL.PolicyStatus <> 1
                            AND PR.PayDate <= PL.ExpiryDate
-    
+
                          GROUP BY L.LocationId, Prod.ProdID, PR.Amount, PR.PayDate, PL.ExpiryDate, PL.EffectiveDate
                      ) NumValue
                 GROUP BY LocationId, ProdID
@@ -291,7 +319,7 @@ def relative_index_calculation_monthly(rel_type, period, year, location_id, prod
 
 def create_relative_index(prod_id, prod_value, year, relative_type, location_id, audit_user_id, rel_price_type,
                           period=None, month_start=None, month_end=None):
-    logger.debug ("Creating relative index for product %s with value %s on year %s, type %s, location %s, "
+    logger.debug("Creating relative index for product %s with value %s on year %s, type %s, location %s, "
                  "rel_price_type %s, period %s, month range %s-%s", prod_id, prod_value, year, relative_type,
                  location_id, rel_price_type, period, month_start, month_end)
     distr = RelativeDistribution.objects \
@@ -420,7 +448,7 @@ def do_process_batch(audit_user_id, location_id, period, year):
 
     for svc_item in [ClaimItem, ClaimService]:
         logger.debug("do_process_batch Checking %s",
-                        "ClaimItem" if isinstance(svc_item, ClaimItem) else "ClaimService")
+                     "ClaimItem" if isinstance(svc_item, ClaimItem) else "ClaimService")
         prod_qs = svc_item.objects \
             .filter(claim__status=Claim.STATUS_PROCESSED) \
             .filter(claim__validity_to__isnull=True) \
