@@ -50,6 +50,9 @@ class ProcessBatchService(object):
         return process_batch(self.user.i_user.id, submit.location_id, submit.month, submit.year)
 
     def old_submit(self, submit):
+        if self.batch_run_already_executed(submit.year, submit.month, submit.location_id):
+            return str(ProcessBatchSubmitError(2))
+
         with connection.cursor() as cur:
             sql = """\
                 DECLARE @ret int;
@@ -71,6 +74,16 @@ class ProcessBatchService(object):
                     next = cur.nextset()
             if res[0]:  # zero means "all done"
                 raise ProcessBatchSubmitError(res[0])
+
+    @classmethod
+    def batch_run_already_executed(cls, year, month, location_id):
+        return BatchRun.objects \
+            .filter(run_year=year) \
+            .filter(run_month=month) \
+            .annotate(nn_location_id=Coalesce("location_id", Value(-1))) \
+            .filter(nn_location_id=-1 if location_id is None else location_id) \
+            .filter(validity_to__isnull=True)\
+            .exists()
 
 
 @transaction.atomic
@@ -381,7 +394,6 @@ def _get_capitation_region_and_district(location_id):
     return region_id, district_id
 
 
-
 def do_process_batch(audit_user_id, location_id, period, year):
     processed_ids = set()  # As we update claims, we add the claims not in relative pricing and then update the status
     logger.debug("do_process_batch location %s for %s/%s", location_id, period, year)
@@ -405,7 +417,6 @@ def do_process_batch(audit_user_id, location_id, period, year):
                                            audit_user_id=audit_user_id)
         relative_index_calculation_monthly(rel_type=1, period=1, year=year, location_id=location_id, product_id=0,
                                            audit_user_id=audit_user_id)
-
 
     for svc_item in [ClaimItem, ClaimService]:
         logger.debug("do_process_batch Checking %s",
