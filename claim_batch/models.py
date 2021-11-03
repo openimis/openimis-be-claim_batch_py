@@ -3,6 +3,7 @@ import uuid
 from core import fields
 from core import models as core_models
 from django.db import models
+from django.utils.translation import gettext_lazy
 from location import models as location_models
 from location.models import HealthFacility, Location
 from product import models as product_models
@@ -55,11 +56,19 @@ class RelativeIndex(core_models.VersionedModel):
 
 
 class RelativeDistribution(models.Model):
+    CARE_TYPE_OUT_PATIENT = "O"
+    CARE_TYPE_IN_PATIENT = "I"
+    CARE_TYPE_BOTH = "B"
+
+    TYPE_MONTH = 12
+    TYPE_QUARTER = 4
+    TYPE_YEAR = 1
+
     id = models.AutoField(db_column='DistrID', primary_key=True)
     product = models.ForeignKey(product_models.Product, models.DO_NOTHING, db_column='ProdID',
                                 related_name="relative_distributions")
-    type = models.SmallIntegerField(db_column='DistrType')
-    care_type = models.CharField(db_column='DistrCareType', max_length=1)
+    type = models.SmallIntegerField(db_column='DistrType', choices=((TYPE_MONTH, gettext_lazy("Month")), (TYPE_QUARTER, gettext_lazy("Quarter")), (TYPE_YEAR, gettext_lazy('Year'))))
+    care_type = models.CharField(db_column='DistrCareType', max_length=1, choices=((CARE_TYPE_BOTH, gettext_lazy("Both")), (CARE_TYPE_IN_PATIENT, gettext_lazy("In-Patient")), (CARE_TYPE_OUT_PATIENT, gettext_lazy("Out-Patient"))))
     period = models.SmallIntegerField(db_column='Period')
     percent = models.DecimalField(
         db_column='DistrPerc', max_digits=18, decimal_places=2, blank=True, null=True)
@@ -74,14 +83,6 @@ class RelativeDistribution(models.Model):
     class Meta:
         managed = False
         db_table = 'tblRelDistr'
-
-    CARE_TYPE_OUT_PATIENT = "O"
-    CARE_TYPE_IN_PATIENT = "I"
-    CARE_TYPE_BOTH = "B"
-
-    TYPE_MONTH = 12
-    TYPE_QUARTER = 4
-    TYPE_YEAR = 1
 
 
 class CapitationPayment(core_models.VersionedModel):
