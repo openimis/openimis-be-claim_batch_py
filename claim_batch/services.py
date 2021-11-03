@@ -50,6 +50,9 @@ class ProcessBatchService(object):
         return process_batch(self.user.i_user.id, submit.location_id, submit.month, submit.year)
 
     def old_submit(self, submit):
+        if self.batch_run_already_executed(submit.year, submit.month, submit.location_id):
+            return str(ProcessBatchSubmitError(2))
+
         with connection.cursor() as cur:
             sql = """\
                 DECLARE @ret int;
@@ -69,8 +72,46 @@ class ProcessBatchService(object):
                     pass
                 finally:
                     next = cur.nextset()
-            if res[0]:  # zero means "all done"
-                raise ProcessBatchSubmitError(res[0])
+            if res[0] != 0:  # zero means "all done"
+                return str([ProcessBatchSubmitError(res[0])])
+        capitation_payment_products = []
+        for svc_item in [ClaimItem, ClaimService]:
+            capitation_payment_products.extend(
+                svc_item.objects
+                    .filter(claim__status=Claim.STATUS_VALUATED)
+                    .filter(claim__validity_to__isnull=True)
+                    .filter(validity_to__isnull=True)
+                    .filter(status=svc_item.STATUS_PASSED)
+                    .annotate(prod_location=Coalesce("product__location_id", Value(-1)))
+                    .filter(prod_location=submit.location_id if submit.location_id else -1)
+                    .values('product_id')
+                    .distinct()
+            )
+
+        region_id, district_id = _get_capitation_region_and_district(submit.location_id)
+        for product in set(map(lambda x: x['product_id'], capitation_payment_products)):
+            params = {
+                'region_id': region_id,
+                'district_id': district_id,
+                'prod_id': product,
+                'year': submit.year,
+                'month': submit.month,
+            }
+            is_report_data_available = get_commision_payment_report_data(params)
+            if not is_report_data_available:
+                process_capitation_payment_data(params)
+            else:
+                logger.debug(F"Capitation payment data for {params} already exists")
+
+    @classmethod
+    def batch_run_already_executed(cls, year, month, location_id):
+        return BatchRun.objects \
+            .filter(run_year=year) \
+            .filter(run_month=month) \
+            .annotate(nn_location_id=Coalesce("location_id", Value(-1))) \
+            .filter(nn_location_id=-1 if location_id is None else location_id) \
+            .filter(validity_to__isnull=True)\
+            .exists()
 
 
 @transaction.atomic
@@ -230,7 +271,7 @@ def relative_index_calculation_monthly(rel_type, period, year, location_id, prod
                            AND (Prod.ProdID=%s or %s=0)
                            AND PL.PolicyStatus <> 1
                            AND PR.PayDate <= PL.ExpiryDate
-    
+
                          GROUP BY L.LocationId, Prod.ProdID, PR.Amount, PR.PayDate, PL.ExpiryDate, PL.EffectiveDate
                      ) NumValue
                 GROUP BY LocationId, ProdID
@@ -278,7 +319,7 @@ def relative_index_calculation_monthly(rel_type, period, year, location_id, prod
 
 def create_relative_index(prod_id, prod_value, year, relative_type, location_id, audit_user_id, rel_price_type,
                           period=None, month_start=None, month_end=None):
-    logger.debug ("Creating relative index for product %s with value %s on year %s, type %s, location %s, "
+    logger.debug("Creating relative index for product %s with value %s on year %s, type %s, location %s, "
                  "rel_price_type %s, period %s, month range %s-%s", prod_id, prod_value, year, relative_type,
                  location_id, rel_price_type, period, month_start, month_end)
     distr = RelativeDistribution.objects \
@@ -381,7 +422,6 @@ def _get_capitation_region_and_district(location_id):
     return region_id, district_id
 
 
-
 def do_process_batch(audit_user_id, location_id, period, year):
     processed_ids = set()  # As we update claims, we add the claims not in relative pricing and then update the status
     logger.debug("do_process_batch location %s for %s/%s", location_id, period, year)
@@ -406,10 +446,9 @@ def do_process_batch(audit_user_id, location_id, period, year):
         relative_index_calculation_monthly(rel_type=1, period=1, year=year, location_id=location_id, product_id=0,
                                            audit_user_id=audit_user_id)
 
-
     for svc_item in [ClaimItem, ClaimService]:
         logger.debug("do_process_batch Checking %s",
-                        "ClaimItem" if isinstance(svc_item, ClaimItem) else "ClaimService")
+                     "ClaimItem" if isinstance(svc_item, ClaimItem) else "ClaimService")
         prod_qs = svc_item.objects \
             .filter(claim__status=Claim.STATUS_PROCESSED) \
             .filter(claim__validity_to__isnull=True) \
