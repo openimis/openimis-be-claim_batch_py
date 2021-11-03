@@ -74,6 +74,10 @@ class ProcessBatchService(object):
                     next = cur.nextset()
             if res[0] != 0:  # zero means "all done"
                 return str([ProcessBatchSubmitError(res[0])])
+        self.capitation_report_data_for_summit(submit)
+
+    @classmethod
+    def capitation_report_data_for_summit(cls, submit):
         capitation_payment_products = []
         for svc_item in [ClaimItem, ClaimService]:
             capitation_payment_products.extend(
