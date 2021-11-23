@@ -383,7 +383,7 @@ def create_relative_index(prod_id, prod_value, year, relative_type, location_id,
 
 
 @transaction.atomic
-@register_service_signal('trigger_bill_creation_from_calcrule')
+@register_service_signal('signal_after_claim_batch_module_process_batch_run_service')
 def process_batch(audit_user_id, location_id, period, year):
     # declare table tblClaimsIDs
     if location_id == -1:
