@@ -13,6 +13,7 @@ from django.db.models.functions import Coalesce, ExtractMonth, ExtractYear
 from django.utils.translation import gettext as _
 from location.models import HealthFacility, Location
 from product.models import Product, ProductItemOrService
+from core.signals import *
 
 logger = logging.getLogger(__name__)
 
@@ -382,6 +383,7 @@ def create_relative_index(prod_id, prod_value, year, relative_type, location_id,
 
 
 @transaction.atomic
+@register_service_signal('signal_after_claim_batch_module_process_batch_run_service')
 def process_batch(audit_user_id, location_id, period, year):
     # declare table tblClaimsIDs
     if location_id == -1:
