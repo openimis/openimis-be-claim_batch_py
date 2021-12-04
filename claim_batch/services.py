@@ -434,11 +434,13 @@ def do_process_batch(audit_user_id, location_id, period, year):
     logger.debug("do_process_batch location %s for %s/%s", location_id, period, year)
     batch_run = new BatchRun
 
-    # 0 prepare the batch run :  does it really make sense per location ?
+    # 0 prepare the batch run :  does it really make sense per location ? (Ideally per pool but the notion doesn't exist yet)
     # 0.1 get all product concerned, all product that have are configured for the location
-    start_date = datetime.date(year, period, 1)
     _, days_in_month = calendar.monthrange(year, period)
     end_date = datetime.date(year, period, days_in_month)
+    period_quarter = period - 2 if period|divisibleby:4 else 0
+    period_sem = period - 5 if period|divisibleby:6 else 0
+
     products = Product.objects\
             .filter(validity_from__lte = start_date)\
             .filter(validity_from__gte = end_date)\
@@ -446,9 +448,19 @@ def do_process_batch(audit_user_id, location_id, period, year):
             .filter(date_from__lte = end_date)\
             .filter(Q(date_to__gte = start_date) | Q(date_to__isnull = True))\
             .filter(location_id = location_id)
-    # 1 per product
+    # 1 per product (Ideally per pool but the notion doesn't exist yet)
     if products:
         for product in products:
+
+            if product.period_rel_prices = 'Y' or product.period_rel_prices_ip = 'Y' or product.period_rel_prices_op = 'Y':
+                start_date = datetime.date(year, 1, 1)
+            else if product.period_rel_prices = 'S' or product.period_rel_prices_ip = 'S' or product.period_rel_prices_op = 'S':    
+                start_date = datetime.date(year, period_sem, 1)
+            else if product.period_rel_prices = 'Q' or product.period_rel_prices_ip = 'Q' or product.period_rel_prices_op = 'Q':    
+                start_date = datetime.date(year, period_quarter, 1)
+            else:
+                start_date = datetime.date(year, period, 1)
+
             work_data.product = product
             # 1.2 get all the payment plan per product
             work_data.paymentplans = PaymentPlan.objects\
@@ -491,27 +503,25 @@ def do_process_batch(audit_user_id, location_id, period, year):
                     if paymentplan.calculation.active_for_object(batch_run, 'BatchValuate'):
                     # 3.2 Execute the calculation per Item or service (not claims)
                         paymentplan.calculation.calculate(work_data, 'BatchValuate'))
-            
-        else:
-            logger.info("no payment plan roduct found for product  %s for %s/%s", product_id, period, year)
-        # 4 update the claim Total amounts if all Item and services got "valuated"
-        claims = Claim.objects\
-            .filter(validity_from__lte = start_date)\
-            .filter(validity_from__gte = end_date)\
-            .filter(validity_to__isnull = True)\
-            .filter(claim_pocess_stamp_lte = end_date  )\
-            .filter(claim_pocess_stamp_gte = end_date  )\
-            .filter(Q(items__product_in = products) & Q(items__legacy_id__isnull = True) | Q(services__product_in = products) & Q(services__legacy_id__isnull = True))\
-            .prefetch_related(Prefetch('items', queryset=ClaimItem.objects.filter(legacy_id__isnull=True)))\
-            .prefetch_related(Prefetch('services', queryset=ClaimService.objects.filter(legacy_id__isnull=True)))
-        for claim in claims:
-            remunerated_amount = 0
-            for service in claim.services:
-                remunerated_amount += service.remunerated_amount
-            for item in claim.items:
-                remunerated_amount += item.remunerated_amount
-        # 5 Generate BatchPayment per product (Ideally per pool but the notion doesn't exist yet)
-        for product in products:
+            else:
+                logger.info("no payment plan product found for product  %s for %s/%s", product_id, period, year)
+            # 4 update the claim Total amounts if all Item and services got "valuated"
+            claims = Claim.objects\
+                .filter(validity_from__lte = start_date)\
+                .filter(validity_from__gte = end_date)\
+                .filter(validity_to__isnull = True)\
+                .filter(claim_pocess_stamp_lte = end_date  )\
+                .filter(claim_pocess_stamp_gte = end_date  )\
+                .filter(Q(items__product_in = products) & Q(items__legacy_id__isnull = True) | Q(services__product_in = products) & Q(services__legacy_id__isnull = True))\
+                .prefetch_related(Prefetch('items', queryset=ClaimItem.objects.filter(legacy_id__isnull=True)))\
+                .prefetch_related(Prefetch('services', queryset=ClaimService.objects.filter(legacy_id__isnull=True)))
+            for claim in claims:
+                remunerated_amount = 0
+                for service in claim.services:
+                    remunerated_amount += service.remunerated_amount
+                for item in claim.items:
+                    remunerated_amount += item.remunerated_amount
+            # 5 Generate BatchPayment per product (Ideally per pool but the notion doesn't exist yet)
             # 5.1 filter a calculation valid for batchRun with context BatchPayment (got via 0.2)
             if work_data.paymentplans:
                 for paymentplan in work_data.paymentplans:
