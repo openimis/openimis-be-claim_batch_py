@@ -3,6 +3,7 @@ import datetime
 import uuid
 import logging
 
+
 import core
 import pandas as pd
 from claim.models import ClaimItem, Claim, ClaimService, ClaimDetail
@@ -431,6 +432,99 @@ def _get_capitation_region_and_district(location_id):
 def do_process_batch(audit_user_id, location_id, period, year):
     processed_ids = set()  # As we update claims, we add the claims not in relative pricing and then update the status
     logger.debug("do_process_batch location %s for %s/%s", location_id, period, year)
+    batch_run = new BatchRun
+
+    # 0 prepare the batch run :  does it really make sense per location ?
+    # 0.1 get all product concerned, all product that have are configured for the location
+    start_date = datetime.date(year, period, 1)
+    _, days_in_month = calendar.monthrange(year, period)
+    end_date = datetime.date(year, period, days_in_month)
+    products = Product.objects\
+            .filter(validity_from__lte = start_date)\
+            .filter(validity_from__gte = end_date)\
+            .filter(validity_to__isnull = True)\
+            .filter(date_from__lte = end_date)\
+            .filter(Q(date_to__gte = start_date) | Q(date_to__isnull = True))\
+            .filter(location_id = location_id)
+    # 1 per product
+    if products:
+        for product in products:
+            work_data.product = product
+            # 1.2 get all the payment plan per product
+            work_data.paymentplans = PaymentPlan.objects\
+                .filter(valid_to__lte = start_date)\
+                .filter(valid_from__gte = end_date)\
+                .filter(product = product)
+            # 1.3 retrive all the Item & service per product
+            work_data.items  = ClaimItem.objects\
+                .filter(validity_from__lte = start_date)\
+                .filter(validity_from__gte = end_date)\
+                .filter(validity_to__isnull = True)\
+                .filter(claim_pocess_stamp_lte = end_date  )\
+                .filter(claim_pocess_stamp_gte = end_date  )\
+                .filter(product = product)
+            work_data.services  = ClaimService.objects\
+                .filter(validity_from__lte = start_date)\
+                .filter(validity_from__gte = end_date)\
+                .filter(claim_pocess_stamp_lte = end_date  )\
+                .filter(claim_pocess_stamp_gte = end_date  )\
+                .filter(validity_to__isnull = True)\
+                .filter(product = product)
+            # 1.4 retrive all contributions per product // process_stamp should be the creation date
+            work_data.contributions  = Premium.objects\
+                .filter(validity_from__lte = start_date)\
+                .filter(validity_from__gte = end_date)\
+                .filter(pocess_stamp_lte = end_date  )\
+                .filter(pocess_stamp_gte = end_date  )\                
+                .filter(validity_to__isnull = True)\
+                .filter(policy__product = product)
+
+            # 2 batchRun pre-calculation 
+            # 2.1 filter a calculation valid for batchRun with context BatchPrepare (got via 0.2): like allocated contribution
+            if work_data.paymentplans:
+                for paymentplan in work_data.paymentplans:
+                    if paymentplan.calculation.active_for_object(batch_run, 'BatchPrepare'):
+                        # work_data gets updated with relevant data such as work_data.allocated_contribution
+                        paymentplan.calculation.calculate(work_data, 'BatchPrepare'))
+                    # 3 Generate Batchvaluation:
+                    # 3.1 filter a calculation valid for batchRun with context BatchValuation (got via 0.2)
+                    if paymentplan.calculation.active_for_object(batch_run, 'BatchValuate'):
+                    # 3.2 Execute the calculation per Item or service (not claims)
+                        paymentplan.calculation.calculate(work_data, 'BatchValuate'))
+            
+        else:
+            logger.info("no payment plan roduct found for product  %s for %s/%s", product_id, period, year)
+        # 4 update the claim Total amounts if all Item and services got "valuated"
+        claims = Claim.objects\
+            .filter(validity_from__lte = start_date)\
+            .filter(validity_from__gte = end_date)\
+            .filter(validity_to__isnull = True)\
+            .filter(claim_pocess_stamp_lte = end_date  )\
+            .filter(claim_pocess_stamp_gte = end_date  )\
+            .filter(Q(items__product_in = products) & Q(items__legacy_id__isnull = True) | Q(services__product_in = products) & Q(services__legacy_id__isnull = True))\
+            .prefetch_related(Prefetch('items', queryset=ClaimItem.objects.filter(legacy_id__isnull=True)))\
+            .prefetch_related(Prefetch('services', queryset=ClaimService.objects.filter(legacy_id__isnull=True)))
+        for claim in claims:
+            remunerated_amount = 0
+            for service in claim.services:
+                remunerated_amount += service.remunerated_amount
+            for item in claim.items:
+                remunerated_amount += item.remunerated_amount
+        # 5 Generate BatchPayment per product (Ideally per pool but the notion doesn't exist yet)
+        for product in products:
+            # 5.1 filter a calculation valid for batchRun with context BatchPayment (got via 0.2)
+            if work_data.paymentplans:
+                for paymentplan in work_data.paymentplans:
+                    if paymentplan.calculation.active_for_object(batch_run, 'BatchPayment'):
+                        # 54.2 Execute the converter per product/batch run/claim (not claims)
+                        paymentplan.calculation.calculate(work_data, 'BatchPayment'))
+    else:
+        logger.info("no product found in  %s for %s/%s", location_id, period, year)
+
+
+
+def do_old_process_batch(audit_user_id, location_id, period, year):
+
     relative_index_calculation_monthly(rel_type=12, period=period, year=year, location_id=location_id, product_id=0,
                                        audit_user_id=audit_user_id)
     if period == 3:
