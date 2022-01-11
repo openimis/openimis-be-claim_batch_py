@@ -9,12 +9,15 @@ import pandas as pd
 from claim.models import ClaimItem, Claim, ClaimService, ClaimDetail
 from claim_batch.models import BatchRun, RelativeIndex, RelativeDistribution, CapitationPayment
 from django.db import connection, transaction
-from django.db.models import Value, F, Sum
+from django.db.models import Value, F, Sum, Q, Prefetch
 from django.db.models.functions import Coalesce, ExtractMonth, ExtractYear
 from django.utils.translation import gettext as _
 from location.models import HealthFacility, Location
 from product.models import Product, ProductItemOrService
 from core.signals import *
+from contribution.models import Premium
+from contribution_plan.models import PaymentPlan
+from calculation.services import run_calculation_rules
 
 logger = logging.getLogger(__name__)
 
@@ -384,7 +387,7 @@ def create_relative_index(prod_id, prod_value, year, relative_type, location_id,
 
 
 @transaction.atomic
-@register_service_signal('signal_after_claim_batch_module_process_batch_service')
+#@register_service_signal('signal_after_claim_batch_module_process_batch_service')
 def process_batch(audit_user_id, location_id, period, year):
     # declare table tblClaimsIDs
     if location_id == -1:
@@ -432,75 +435,74 @@ def _get_capitation_region_and_district(location_id):
 def do_process_batch(audit_user_id, location_id, period, year):
     processed_ids = set()  # As we update claims, we add the claims not in relative pricing and then update the status
     logger.debug("do_process_batch location %s for %s/%s", location_id, period, year)
-    batch_run = new BatchRun
+    from core.utils import TimeUtils
+    created_run = BatchRun.objects.create(location_id=location_id, run_year=year, run_month=period,
+                                          run_date=TimeUtils.now(), audit_user_id=audit_user_id,
+                                          validity_from=TimeUtils.now())
+    logger.debug("do_process_batch created run: %s", created_run.id)
 
     # 0 prepare the batch run :  does it really make sense per location ? (Ideally per pool but the notion doesn't exist yet)
     # 0.1 get all product concerned, all product that have are configured for the location
     _, days_in_month = calendar.monthrange(year, period)
+    start_date = datetime.date(year, period, 1)
     end_date = datetime.date(year, period, days_in_month)
-    period_quarter = period - 2 if period|divisibleby:4 else 0
-    period_sem = period - 5 if period|divisibleby:6 else 0
+    period_quarter = period - 2 if period % 3 == 0 else 0
+    period_sem = period - 5 if period % 6 == 0 else 0
 
     products = Product.objects\
-            .filter(validity_from__lte = start_date)\
-            .filter(validity_from__gte = end_date)\
             .filter(validity_to__isnull = True)\
-            .filter(date_from__lte = end_date)\
-            .filter(Q(date_to__gte = start_date) | Q(date_to__isnull = True))\
-            .filter(location_id = location_id)
+            .filter(date_from__lte=end_date)\
+            .filter(Q(date_to__gte=start_date) | Q(date_to__isnull=True))\
+            .filter(location_id=location_id)
     # 1 per product (Ideally per pool but the notion doesn't exist yet)
     if products:
         for product in products:
             # TBC clean work_data
-            if product.period_rel_prices = 'Y' or product.period_rel_prices_ip = 'Y' or product.period_rel_prices_op = 'Y':
+            if product.period_rel_prices == 'Y' or product.period_rel_prices_ip == 'Y' or product.period_rel_prices_op == 'Y':
                 start_date = datetime.date(year, 1, 1)
-            else if product.period_rel_prices = 'S' or product.period_rel_prices_ip = 'S' or product.period_rel_prices_op = 'S':    
+            elif product.period_rel_prices == 'S' or product.period_rel_prices_ip == 'S' or product.period_rel_prices_op == 'S':
                 start_date = datetime.date(year, period_sem, 1)
-            else if product.period_rel_prices = 'Q' or product.period_rel_prices_ip = 'Q' or product.period_rel_prices_op = 'Q':    
+            elif product.period_rel_prices == 'Q' or product.period_rel_prices_ip == 'Q' or product.period_rel_prices_op == 'Q':
                 start_date = datetime.date(year, period_quarter, 1)
             else:
                 start_date = datetime.date(year, period, 1)
 
-            work_data.product = product
+            work_data = {}
+            work_data["created_run"] = created_run
+            work_data["product"] = product
             # 1.2 get all the payment plan per product
-            work_data.paymentplans = PaymentPlan.objects\
-                .filter(valid_to__lte = start_date)\
-                .filter(valid_from__gte = end_date)\
-                .filter(product = product)
+            work_data["payment_plans"] = PaymentPlan.objects\
+                .filter(date_valid_to__gte=start_date)\
+                .filter(date_valid_from__lte=end_date)\
+                .filter(benefit_plan=product)
             # 1.3 retrive all the Item & service per product
             # to be checked if we need to pull the claim too
-            work_data.items  = ClaimItem.objects\
-                .filter(validity_from__lte = start_date)\
-                .filter(validity_from__gte = end_date)\
-                .filter(validity_to__isnull = True)\
-                .filter(claim_pocess_stamp_lte = end_date  )\
-                .filter(claim_pocess_stamp_gte = end_date  )\
-                .filter(product = product)\
+            work_data["items"] = ClaimItem.objects\
+                .filter(validity_to__isnull=True)\
+                .filter(claim__process_stamp__lte=end_date)\
+                .filter(claim__process_stamp__gte =start_date)\
+                .filter(product=product)\
                 .select_related('claim__health_facility')\
-                .orderby('claim__health_facility').orderby('claim_id')
-            work_data.services  = ClaimService.objects\
-                .filter(validity_from__lte = start_date)\
-                .filter(validity_from__gte = end_date)\
-                .filter(claim_pocess_stamp_lte = end_date  )\
-                .filter(claim_pocess_stamp_gte = end_date  )\
-                .filter(validity_to__isnull = True)\
-                .filter(product = product)\
+                .order_by('claim__health_facility').order_by('claim_id')
+            work_data["services"] = ClaimService.objects\
+                .filter(claim__process_stamp__lte=end_date)\
+                .filter(claim__process_stamp__gte=start_date)\
+                .filter(validity_to__isnull=True)\
+                .filter(product=product)\
                 .select_related('claim__health_facility')\
-                .orderby('claim__health_facility').orderby('claim_id')
+                .order_by('claim__health_facility').order_by('claim_id')
             # 1.4 retrive all contributions per product // process_stamp should be the creation date
-            work_data.contributions  = Premium.objects\
-                .filter(validity_from__lte = start_date)\
-                .filter(validity_from__gte = end_date)\
-                .filter(pocess_stamp_lte = end_date  )\
-                .filter(pocess_stamp_gte = end_date  )\                
-                .filter(validity_to__isnull = True)\
-                .filter(policy__product = product)\
+            work_data["contributions"] = Premium.objects \
+                .filter(validity_from__lte=end_date) \
+                .filter(validity_from__gte=start_date) \
+                .filter(validity_to__isnull=True)\
+                .filter(policy__product=product)\
                 .select_related('policy')
 
-            # 2 batchRun pre-calculation 
-
+            # 2 batchRun pre-calculation
             # update the service and item valuated amount 
-            claim_batch_valuation(work_data.items, work_data.services , work_data.allocated_contributions)
+            # TODO implement function 'get_period' that is called in 'claim_batch_valuation'
+            #claim_batch_valuation(work_data, start_date, end_date)
 
             # 2.1 [for the futur if there is any need ]filter a calculation valid for batchRun with context BatchPrepare (got via 0.2): like allocated contribution
             #if work_data.paymentplans:
@@ -517,27 +519,43 @@ def do_process_batch(audit_user_id, location_id, period, year):
             #    logger.info("no payment plan product found for product  %s for %s/%s", product_id, period, year)
             # 4 update the claim Total amounts if all Item and services got "valuated"
             claims = Claim.objects\
-                .filter(validity_from__lte = start_date)\
-                .filter(validity_from__gte = end_date)\
-                .filter(validity_to__isnull = True)\
-                .filter(claim_pocess_stamp_lte = end_date  )\
-                .filter(claim_pocess_stamp_gte = end_date  )\
-                .filter(Q(items__product_in = products) & Q(items__legacy_id__isnull = True) | Q(services__product_in = products) & Q(services__legacy_id__isnull = True))\
+                .filter(validity_from__lte=end_date)\
+                .filter(validity_from__gte=start_date)\
+                .filter(validity_to__isnull=True)\
+                .filter(process_stamp__lte=end_date)\
+                .filter(process_stamp__gte=start_date)\
+                .filter(Q(items__product__in=products) & Q(items__legacy_id__isnull=True) | Q(services__product__in=products) & Q(services__legacy_id__isnull=True))\
                 .prefetch_related(Prefetch('items', queryset=ClaimItem.objects.filter(legacy_id__isnull=True)))\
                 .prefetch_related(Prefetch('services', queryset=ClaimService.objects.filter(legacy_id__isnull=True)))
+
+            # could be duplicates - distinct
+            claims = list(claims.values_list('id', flat=True).distinct())
+            claims = Claim.objects.filter(id__in=claims)
+
             for claim in claims:
                 remunerated_amount = 0
-                for service in claim.services:
-                    remunerated_amount += service.remunerated_amount
-                for item in claim.items:
-                    remunerated_amount += item.remunerated_amount
+                for service in claim.services.all():
+                    remunerated_amount = service.remunerated_amount + remunerated_amount if service.remunerated_amount else remunerated_amount
+                for item in claim.items.all():
+                    remunerated_amount += item.remunerated_amount + remunerated_amount if item.remunerated_amount else remunerated_amount
+                if remunerated_amount > 0:
+                    claim.valuated = remunerated_amount
+                    claim.save()
+                claim.batch_run = work_data["created_run"]
+                claim.save()
+
             # 5 Generate BatchPayment per product (Ideally per pool but the notion doesn't exist yet)
             # 5.1 filter a calculation valid for batchRun with context BatchPayment (got via 0.2)
-            if work_data.paymentplans:
-                for paymentplan in work_data.paymentplans:
-                    if paymentplan.calculation.active_for_object(batch_run, 'BatchPayment'):
-                        # 54.2 Execute the converter per product/batch run/claim (not claims)
-                        paymentplan.calculation.calculate(work_data, 'BatchPayment'))
+            if work_data["payment_plans"]:
+                for payment_plan in work_data["payment_plans"]:
+                    # 54.2 Execute the converter per product/batch run/claim (not claims)
+                    rcr = run_calculation_rules(payment_plan, "BatchPayment", None,
+                                                work_data=work_data, audit_user_id=audit_user_id,
+                                                location_id=location_id, period=period, year=year)
+                    logger.debug("conversion processed for: %s", rcr[0][0])
+
+            # save the batch run into db
+            logger.debug("do_process_batch created run: %s", created_run.id)
     else:
         logger.info("no product found in  %s for %s/%s", location_id, period, year)
 
@@ -546,90 +564,106 @@ def do_process_batch(audit_user_id, location_id, period, year):
 def get_allocated_premium(premiums, start_date, end_date):
     # go trough the contribution and find the allocated contribution 
     allocated_premiums = 0
-    for premiums in premium:
+    for premium in premiums:
         allocation_start = max(policy.effective_date, start_date)
         allocation_stop = min(start_date, policy.expiry_date)
-        policy_duration = policy.expiry_date(  - policy.effective_date 
+        policy_duration = policy.expiry_date - policy.effective_date
         allocated_premiums += premium.amount * (allocation_stop - allocation_start ) / policy_duration
-    return  allocated_premiums
+    return allocated_premiums
+
+
+def get_period(start_date, end_date):
+    # TODO do function that returns such values M/Q/Y , 1-12/1-4/1
+    pass
 
    
 # update the service and item valuated amount 
 def claim_batch_valuation(work_data, start_date, end_date):
-    allocated_contributions = get_allocated_premium(work_data.contributions, start_date, end_date)
+    allocated_contributions = get_allocated_premium(work_data["contributions"], start_date, end_date)
     # Sum up all item and service amount
     value_hospital = 0
     value_non_hospital = 0
-    periode_type, period_id = get_period(start_date, end_date); # M/Q/Y , 1-12/1-4/1
-    # ensure that the product need to be valuated for the given period
-    if period_rel_prices  == periode_type:
-        period_rate = get_relative_price_rate(work_data.product, 'B' periode_type, period_id) # migh be added in product service
-    elif period_rel_prices_ip == periode_type:
-        period_rate_ip = get_relative_price_rate(work_data.product, 'I' periode_type, period_id) # migh be added in product service
-    elif period_rel_prices_op == periode_type
-        period_rate_op = get_relative_price_rate(work_data.product, 'O' periode_type, period_id) # migh be added in product service
+    period_type, period_id = get_period(start_date, end_date)
 
-    if period_rate>0 or period_rate_ip>0 or period_rate_op>0:
+    product = work_data["product"]
+    items = work_data["items"]
+    services = work_data["services"]
+
+    # ensure that the product need to be valuated for the given period
+    if product.period_rel_prices  == period_type:
+        period_rate = get_relative_price_rate(product, 'B', period_type, period_id) # migh be added in product service
+    elif product.period_rel_prices_ip == period_type:
+        period_rate_ip = get_relative_price_rate(product, 'I', period_type, period_id) # migh be added in product service
+    elif product.period_rel_prices_op == period_type:
+        period_rate_op = get_relative_price_rate(product, 'O', period_type, period_id) # migh be added in product service
+
+    if period_rate > 0 or period_rate_ip > 0 or period_rate_op > 0:
         for item in items:
-            item_quatity = item.qty_approved ? item.qty_approved : item.qty_provided # if qty_approved not null
-            item_price = item.price_approved ? item.price_approved : (item.price_adjusted ? item.price_adjusted : item.price_asked)  # if price_approved not null
-            if is_hospital_claim(work_data.product, item.claim):
+            item_quatity = item.qty_approved if item.qty_approved else item.qty_provided
+            item_price = item.price_approved if item.price_approved else (item.price_adjusted if item.price_adjusted else item.price_asked)  # if price_approved not null
+            if is_hospital_claim(product, item.claim):
                 value_hospital = item_price * item_quatity
             else:
                 value_non_hospital = item_price * item_quatity
 
-
         for service in services:
-            service_quatity = service.qty_approved ? service.qty_approved : service.qty_provided # if qty_approved not null
-            service_price = service.price_approved ? service.price_approved : (service.price_adjusted ? service.price_adjusted : service.price_asked)  # if price_approved not null
-            if is_hospital_claim(work_data.product, service.claim):
+            service_quatity = service.qty_approved if service.qty_approved else service.qty_provided
+            service_price = service.price_approved if service.price_approved else (service.price_adjusted if service.price_adjusted else service.price_asked)  # if price_approved not null
+            if is_hospital_claim(product, service.claim):
                 value_hospital = service_price * service_quatity
             else:
-                value_non_hospital = item_price * item_quatity
+                value_non_hospital = service_price * service_quatity
             # calculate the index based on product config
 
         # creeeate i/o index OR in and out patien index
-        if period_rate>0:
-            index = (value_non_hospital + value_hospital) > 0 ? allocated_contributions/(value_non_hospital + value_hospital) : 1
-            create_index(work_data.product, index,'B',periode_type, period_id)
-        else:
-            elif period_rate_ip>0:
-                index_ip = value_hospital >0 ? allocated_contributions / value_hospital :1
-                create_index(work_data.product, index_ip ,'I',periode_type, period_id)
-            elif period_rate_op>0:
-                index_op = value_non_hospital >0 ? allocated_contributions / value_non_hospital :1
-                create_index(work_data.product,  index_op ,'O',periode_type, period_id)
+        if period_rate > 0:
+            index = allocated_contributions/value_non_hospital if value_non_hospital + value_hospital > 0 else 1
+            create_index(product, index,'B',period_type, period_id)
+        elif period_rate_ip > 0:
+            index_ip = allocated_contributions / value_hospital if value_hospital > 0  else 1
+            create_index(product, index_ip ,'I',period_type, period_id)
+        elif period_rate_op > 0:
+            index_op = allocated_contributions / value_non_hospital if value_non_hospital > 0  else 1
+            create_index(product,  index_op ,'O',period_type, period_id)
 
         # update the item and services        
         for item in items:
-            item_quatity = item.qty_approved ? item.qty_approved : item.qty_provided # if qty_approved not null
-            item_price = item.price_approved ? item.price_approved : (item.price_adjusted ? item.price_adjusted : item.price_asked)  # if price_approved not null
+            item_quatity = item.qty_approved if item.qty_approved else item.qty_provided # if qty_approved not null
+            item_price = item.price_approved if item.price_approved else (item.price_adjusted if item.price_adjusted else item.price_asked)  # if price_approved not null
             if is_hospital_claim(work_data.product, item.claim) and (index>0 or index_ip>0):
-                item.price_valuated  = item_price * item_quatity * (index > 0 ? index : index_ip)
+                item.price_valuated  = item_price * item_quatity * (index if index > 0 else index_ip)
                 item.save()
-            else if (index>0 or index_op>0):
-                item.price_valuated  = item_price * item_quatity * (index > 0 ? index : index_op)
+            elif index > 0 or index_op > 0:
+                item.price_valuated  = item_price * item_quatity * (index if index > 0 else index_op)
                 item.save()
         for service in services:
-            service_quatity = service.qty_approved ? service.qty_approved : service.qty_provided # if qty_approved not null
-            service_price = service.price_approved ? service.price_approved : (service.price_adjusted ? service.price_adjusted : service.price_asked)  # if price_approved not null
+            service_quatity = service.qty_approved if service.qty_approved else service.qty_provided # if qty_approved not null
+            service_price = service.price_approved if service.price_approved else (service.price_adjusted if service.price_adjusted else service.price_asked)  # if price_approved not null
             if is_hospital_claim(work_data.product, service.claim) and (index>0 or index_ip>0):
-                service.price_valuated  = service_price * service_quatity * (index > 0 ? index : index_ip)
+                service.price_valuated  = service_price * service_quatity * (index if index > 0 else index_ip)
                 service.save()
-            else if (index>0 or index_op>0):
-                service.price_valuated  = service_price * service_quatity * (index > 0 ? index : index_op)
+            elif index > 0 or index_op > 0:
+                service.price_valuated  = service_price * service_quatity * (index if index > 0 else index_op)
                 service.save() 
+
 
 # to be moded in product services
 def is_hospital_claim(product, claim):
-    if product.ceiling_interpretation  = CEILING_INTERPRETATION_HOSPITAL :
-        return claim.health_facility.level = LEVEL_HOSPITAL
+    if product.ceiling_interpretation  == Product.CEILING_INTERPRETATION_HOSPITAL:
+        return claim.health_facility.level == HealthFacility.LEVEL_HOSPITAL
     else:
         return claim.date_to is not None and claim.date_to > claim.date_from
 
+
 # to be moded in product services
-def create_index(product, index , index_type,periode_type, period_id):
+def create_index(product, index , index_type, period_type, period_id):
     pass #just create the row in db
+
+
+# might be added in product service
+def get_relative_price_rate(product, index_type, period_type, period_id):
+    pass #just create the row in db
+
 
 def do_old_process_batch(audit_user_id, location_id, period, year):
 
