@@ -785,10 +785,10 @@ def _execute_capitation_payment_procedure(cursor, procedure, params):
                     @ProdId = %s,
                     @Year = %s,
                     @Month = %s,	
-                    @HFLevel = @HF
+                    @HFLevel = @HF;
             """
 
-    cursor.execute(sql, (
+    cursor.execute(sql, ( 
         params.get('region_id', None),
         params.get('district_id', None),
         params.get('prod_id', 0),
