@@ -458,11 +458,14 @@ def do_process_batch(audit_user_id, location_id, period, year):
     if products:
         for product in products:
             # TBC clean work_data
-            if product.period_rel_prices == 'Y' or product.period_rel_prices_ip == 'Y' or product.period_rel_prices_op == 'Y':
+            if product.period_rel_prices == 'Y' or product.period_rel_prices_ip == 'Y' \
+                    or product.period_rel_prices_op == 'Y':
                 start_date = datetime.date(year, 1, 1)
-            elif product.period_rel_prices == 'S' or product.period_rel_prices_ip == 'S' or product.period_rel_prices_op == 'S':
+            elif product.period_rel_prices == 'S' or product.period_rel_prices_ip == 'S' \
+                    or product.period_rel_prices_op == 'S':
                 start_date = datetime.date(year, period_sem, 1)
-            elif product.period_rel_prices == 'Q' or product.period_rel_prices_ip == 'Q' or product.period_rel_prices_op == 'Q':
+            elif product.period_rel_prices == 'Q' or product.period_rel_prices_ip == 'Q' \
+                    or product.period_rel_prices_op == 'Q':
                 start_date = datetime.date(year, period_quarter, 1)
             else:
                 start_date = datetime.date(year, period, 1)
@@ -480,7 +483,7 @@ def do_process_batch(audit_user_id, location_id, period, year):
             work_data["items"] = ClaimItem.objects\
                 .filter(validity_to__isnull=True)\
                 .filter(claim__process_stamp__lte=end_date)\
-                .filter(claim__process_stamp__gte =start_date)\
+                .filter(claim__process_stamp__gte=start_date)\
                 .filter(product=product)\
                 .select_related('claim__health_facility')\
                 .order_by('claim__health_facility').order_by('claim_id')
@@ -524,7 +527,6 @@ def do_process_batch(audit_user_id, location_id, period, year):
                 .filter(validity_to__isnull=True)\
                 .filter(process_stamp__lte=end_date)\
                 .filter(process_stamp__gte=start_date)\
-                .filter(Q(items__product__in=products) & Q(items__legacy_id__isnull=True) | Q(services__product__in=products) & Q(services__legacy_id__isnull=True))\
                 .prefetch_related(Prefetch('items', queryset=ClaimItem.objects.filter(legacy_id__isnull=True)))\
                 .prefetch_related(Prefetch('services', queryset=ClaimService.objects.filter(legacy_id__isnull=True)))
 
@@ -537,7 +539,7 @@ def do_process_batch(audit_user_id, location_id, period, year):
                 for service in claim.services.all():
                     remunerated_amount = service.remunerated_amount + remunerated_amount if service.remunerated_amount else remunerated_amount
                 for item in claim.items.all():
-                    remunerated_amount += item.remunerated_amount + remunerated_amount if item.remunerated_amount else remunerated_amount
+                    remunerated_amount = item.remunerated_amount + remunerated_amount if item.remunerated_amount else remunerated_amount
                 if remunerated_amount > 0:
                     claim.valuated = remunerated_amount
                     claim.save()
@@ -565,10 +567,10 @@ def get_allocated_premium(premiums, start_date, end_date):
     # go trough the contribution and find the allocated contribution 
     allocated_premiums = 0
     for premium in premiums:
-        allocation_start = max(policy.effective_date, start_date)
-        allocation_stop = min(start_date, policy.expiry_date)
-        policy_duration = policy.expiry_date - policy.effective_date
-        allocated_premiums += premium.amount * (allocation_stop - allocation_start ) / policy_duration
+        allocation_start = max(premium.policy.effective_date, start_date)
+        allocation_stop = min(start_date, premium.policy.expiry_date)
+        policy_duration = premium.policy.expiry_date - premium.policy.effective_date
+        allocated_premiums += premium.amount * (allocation_stop - allocation_start) / policy_duration
     return allocated_premiums
 
 
@@ -590,7 +592,7 @@ def claim_batch_valuation(work_data, start_date, end_date):
     services = work_data["services"]
 
     # ensure that the product need to be valuated for the given period
-    if product.period_rel_prices  == period_type:
+    if product.period_rel_prices == period_type:
         period_rate = get_relative_price_rate(product, 'B', period_type, period_id) # migh be added in product service
     elif product.period_rel_prices_ip == period_type:
         period_rate_ip = get_relative_price_rate(product, 'I', period_type, period_id) # migh be added in product service
@@ -615,35 +617,36 @@ def claim_batch_valuation(work_data, start_date, end_date):
                 value_non_hospital = service_price * service_quatity
             # calculate the index based on product config
 
-        # creeeate i/o index OR in and out patien index
+        # create i/o index OR in and out patien index
         if period_rate > 0:
             index = allocated_contributions/value_non_hospital if value_non_hospital + value_hospital > 0 else 1
-            create_index(product, index,'B',period_type, period_id)
-        elif period_rate_ip > 0:
-            index_ip = allocated_contributions / value_hospital if value_hospital > 0  else 1
-            create_index(product, index_ip ,'I',period_type, period_id)
-        elif period_rate_op > 0:
-            index_op = allocated_contributions / value_non_hospital if value_non_hospital > 0  else 1
-            create_index(product,  index_op ,'O',period_type, period_id)
+            create_index(product, index, 'B', period_type, period_id)
+        else:
+            if period_rate_ip > 0:
+                index_ip = allocated_contributions / value_hospital if value_hospital > 0 else 1
+                create_index(product, index_ip, 'I', period_type, period_id)
+            elif period_rate_op > 0:
+                index_op = allocated_contributions / value_non_hospital if value_non_hospital > 0 else 1
+                create_index(product, index_op, 'O', period_type, period_id)
 
         # update the item and services        
         for item in items:
             item_quatity = item.qty_approved if item.qty_approved else item.qty_provided # if qty_approved not null
             item_price = item.price_approved if item.price_approved else (item.price_adjusted if item.price_adjusted else item.price_asked)  # if price_approved not null
-            if is_hospital_claim(work_data.product, item.claim) and (index>0 or index_ip>0):
-                item.price_valuated  = item_price * item_quatity * (index if index > 0 else index_ip)
+            if is_hospital_claim(work_data.product, item.claim) and (index > 0 or index_ip > 0):
+                item.price_valuated = item_price * item_quatity * (index if index > 0 else index_ip)
                 item.save()
             elif index > 0 or index_op > 0:
-                item.price_valuated  = item_price * item_quatity * (index if index > 0 else index_op)
+                item.price_valuated = item_price * item_quatity * (index if index > 0 else index_op)
                 item.save()
         for service in services:
             service_quatity = service.qty_approved if service.qty_approved else service.qty_provided # if qty_approved not null
             service_price = service.price_approved if service.price_approved else (service.price_adjusted if service.price_adjusted else service.price_asked)  # if price_approved not null
             if is_hospital_claim(work_data.product, service.claim) and (index>0 or index_ip>0):
-                service.price_valuated  = service_price * service_quatity * (index if index > 0 else index_ip)
+                service.price_valuated = service_price * service_quatity * (index if index > 0 else index_ip)
                 service.save()
             elif index > 0 or index_op > 0:
-                service.price_valuated  = service_price * service_quatity * (index if index > 0 else index_op)
+                service.price_valuated = service_price * service_quatity * (index if index > 0 else index_op)
                 service.save() 
 
 
