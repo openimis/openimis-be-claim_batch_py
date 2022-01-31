@@ -584,7 +584,7 @@ def get_period(start_date, end_date):
    
 # update the service and item valuated amount 
 def claim_batch_valuation(work_data, start_date, end_date):
-    allocated_contributions = ["allocated_contributions"]
+    allocated_contributions = work_data["allocated_contributions"]
     # Sum up all item and service amount
     value_hospital = 0
     value_non_hospital = 0
