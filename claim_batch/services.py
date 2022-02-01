@@ -7,7 +7,7 @@ import logging
 import core
 import pandas as pd
 from claim.models import ClaimItem, Claim, ClaimService, ClaimDetail
-from claim_batch.models import BatchRun, RelativeIndex, RelativeDistribution, CapitationPayment
+from claim_batch.models import BatchRun, RelativeIndex, RelativeDistribution
 from django.db import connection, transaction
 from django.db.models import Value, F, Sum, Q, Prefetch
 from django.db.models.functions import Coalesce, ExtractMonth, ExtractYear
@@ -507,6 +507,9 @@ def do_process_batch(audit_user_id, location_id, period, year):
             # TODO implement function 'get_period' that is called in 'claim_batch_valuation'
             #claim_batch_valuation(work_data, start_date, end_date)
 
+            allocated_contributions = get_allocated_premium(work_data["contributions"], start_date, end_date)
+            work_data['allocated_contributions'] = allocated_contributions
+
             # 2.1 [for the futur if there is any need ]filter a calculation valid for batchRun with context BatchPrepare (got via 0.2): like allocated contribution
             #if work_data.paymentplans:
             #    for paymentplan in work_data.paymentplans:
@@ -553,7 +556,7 @@ def do_process_batch(audit_user_id, location_id, period, year):
                     # 54.2 Execute the converter per product/batch run/claim (not claims)
                     rcr = run_calculation_rules(payment_plan, "BatchPayment", None,
                                                 work_data=work_data, audit_user_id=audit_user_id,
-                                                location_id=location_id, period=period, year=year)
+                                                location_id=location_id, start_date=start_date, end_date=end_date)
                     logger.debug("conversion processed for: %s", rcr[0][0])
 
             # save the batch run into db
@@ -581,7 +584,7 @@ def get_period(start_date, end_date):
    
 # update the service and item valuated amount 
 def claim_batch_valuation(work_data, start_date, end_date):
-    allocated_contributions = get_allocated_premium(work_data["contributions"], start_date, end_date)
+    allocated_contributions = work_data["allocated_contributions"]
     # Sum up all item and service amount
     value_hospital = 0
     value_non_hospital = 0
