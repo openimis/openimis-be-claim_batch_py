@@ -502,8 +502,8 @@ def claim_batch_valuation(work_data):
     period_type, period_id = get_period(product, end_date)
     period_type_ip, period_id_ip = get_period(product, end_date)
 
-    # ensure that the product need to be valuated for the given period
-    if period_rate > 0 or period_rate_ip > 0:
+    # if there is no configuration the relative index will be set to 100 %
+    if start_date is not None  or  start_date_ip is not None > 0:
         claims = add_hospital_claim_date_filter(claims, relative_price_g, start_date, start_date_ip, end_date  )
         claims = claims.prefetch_related(Prefetch('items', queryset=ClaimItem.objects.filter(legacy_id__isnull=True).filter(product = product)))\
                 .prefetch_related(Prefetch('services', queryset=ClaimService.objects.filter(legacy_id__isnull=True).filter(product = product)))
@@ -525,13 +525,12 @@ def claim_batch_valuation(work_data):
                 # calculate the index based on product config
 
         # create i/o index OR in and out patien index
-        if relative_price_g  and period_rate > 0:
-
+        if relative_price_g :
             index = get_relative_price_rate(product, 'B', start_date, end_date, allocated_contributions, value_non_hospital + value_hospital) 
         else:
-            if period_rate_ip > 0:
+            if start_date_ip is not None:
                 index_ip = get_relative_price_rate(product, 'I', start_date, end_date, allocated_contributions, value_non_hospital + value_hospital) 
-            elif period_rate_op > 0:
+            elif start_date is not None:
                 index = get_relative_price_rate(product, 'O', start_date, end_date, allocated_contributions, value_non_hospital + value_hospital) 
 
         # update the item and services 
@@ -574,14 +573,14 @@ def create_index(product, index , index_type, period_type, period_id):
 # might be added in product service
 def get_relative_price_rate(product, index_type, date_start, end_date, allocated_contributions, sum_r_items_services):
     #FIXME get only the matching row
-    rel_index_obj = RelativeDistribution.objects.filter(product = product)\
+    rel_distribution = RelativeDistribution.objects.filter(product = product)\
         .filter(period = period)\
         .filter(type = period_type)\
         .filter(care_type = index_type)\
         .filter(legacy_id__isnull =True)
-    rel_index = rel_index_obj.percent
-    if rel_index is not None:
-        index = rel_index * allocated_contributions / (sum_r_items_services)
+    rel_rate = rel_distribution.percent
+    if rel_irel_ratendex is not None:
+        index = rel_rate * allocated_contributions / (sum_r_items_services)
         period_type, period_id = get_period(date_start, end_date)
         create_index(product, index , index_type, period_type, period_id)
         return index
