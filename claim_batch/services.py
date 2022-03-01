@@ -9,7 +9,7 @@ import pandas as pd
 from claim.models import ClaimItem, Claim, ClaimService, ClaimDetail
 from claim_batch.models import BatchRun, RelativeIndex, RelativeDistribution
 from django.db import connection, transaction
-from django.db.models import Value, F, Sum, Q, Prefetch
+from django.db.models import Value, F, Sum, Q, Prefetch, Count
 from django.db.models.functions import Coalesce, ExtractMonth, ExtractYear
 from django.utils.translation import gettext as _
 from location.models import HealthFacility, Location
@@ -343,10 +343,10 @@ def do_process_batch(audit_user_id, location_id, end_date):
                 .filter(validity_from__gte=start_date)\
                 .filter(validity_to__isnull=True)\
                 .filter(process_stamp__lte=end_date)\
-                .filter(Count(items__product=product) + Count (services__product=product)>0)
+                .filter((Count(items__product=product)+Count(services__product=product)) > 0)
             work_data['claims'] = claims
             # adds the filter to includ only the claims according the start/stop and cieling definition 
-            claims = add_hospital_claim_date_filter(claims, relative_price_g, start_date, start_date_ip, end_date  )
+            claims = add_hospital_claim_date_filter(claims, relative_price_g, start_date, start_date_ip, end_date)
             # prefectch Item and services
 
             
@@ -441,9 +441,9 @@ def get_start_date(end_date, relative_price):
     year = end_date.year
     month = end_date.month
     start_date_month = datetime.date(year, month, 1)
-    start_date_quarter = datetime.date(year, month -2, 1) if  month % 3 == 0 else None
-    start_date_year = datetime.date(year, 1, 1) if  period == 12 else None
-    start_date_sem = datetime.date(year, month - 5  , 1) if  month % 6 == 0 else None
+    start_date_quarter = datetime.date(year, month -2, 1) if month % 3 == 0 else None
+    start_date_year = datetime.date(year, 1, 1) if month == 12 else None
+    start_date_sem = datetime.date(year, month - 5 , 1) if month % 6 == 0 else None
     if relative_price == 'Y':
         return start_date_year
     elif relative_price == 'Q':
@@ -455,15 +455,14 @@ def get_start_date(end_date, relative_price):
     else:
         return None
 
-def add_hospital_claim_date_filter(claims_queryset, relative_price_g, start_date, start_date_ig, end_date, ci  ):
-    ceiling_interpreation = product.ceiling_interpreation
-    if relative_price_g or start_date == start_date_ig:
-        claims_queryset = claims_queryset.filter(process_stamp__range(start_date, end_date))
+def add_hospital_claim_date_filter(claims_queryset, relative_price_g, start_date, start_date_ip, end_date, ceiling_interpreation):
+    if relative_price_g or start_date == start_date_ip:
+        claims_queryset = claims_queryset.filter(process_stamp__range=[start_date, end_date])
     else: 
         if start_date is not None:
-            cond_op = Q(process_stamp__range(start_date, end_date)) & ~get_hospital_claim_filter(ci) 
+            cond_op = Q(process_stamp__range=[start_date, end_date]) & ~get_hospital_claim_filter(ceiling_interpreation)
         if start_date is not None:
-            cond_ip = Q(process_stamp__range(start_date_ip, end_date)) & get_hospital_claim_filter(ci)
+            cond_ip = Q(process_stamp__range=[start_date_ip, end_date]) & get_hospital_claim_filter(ceiling_interpreation)
         if cond_op is not None and cond_ip is not None:
             claims_queryset = claims_queryset.filter(cond_op | cond_ip)
         elif cond_op is not None:
@@ -481,7 +480,7 @@ def get_hospital_claim_filter(ci):
     if ci  == Product.CEILING_INTERPRETATION_HOSPITAL:
         return  Q( health_facility_level=HealthFacility.LEVEL_HOSPITAL)
     else:
-        return (Q(date_to__is_null= False) & Q(date_to__gt=F(date_from)))
+        return (Q(date_to__is_null=False) & Q(date_to__gt=F('date_from')))
 
 
 # update the service and item valuated amount 
@@ -489,12 +488,6 @@ def claim_batch_valuation(work_data):
     allocated_contributions = work_data["allocated_contributions"]
     allocated_contributions_ip = work_data["allocated_contributions_ip"]
     relative_price_g = work_data["relative_price_g"]
-    # Sum up all item and service amount
-    value_hospital = 0
-    value_non_hospital = 0
-    period_type, period_id = get_period(product, end_date)
-    period_type_ip, period_id_ip = get_period(product, end_date)
-
     product = work_data["product"]
     items = work_data["items"]
     services = work_data["services"]
@@ -502,9 +495,15 @@ def claim_batch_valuation(work_data):
     start_date_ip = work_data["end_date_ip"]
     end_date = work_data["end_date"]
     claims = work_data["claims"]
-    # ensure that the product need to be valuated for the given period
 
-    if period_rate > 0 or period_rate_ip > 0 :
+    # Sum up all item and service amount
+    value_hospital = 0
+    value_non_hospital = 0
+    period_type, period_id = get_period(product, end_date)
+    period_type_ip, period_id_ip = get_period(product, end_date)
+
+    # ensure that the product need to be valuated for the given period
+    if period_rate > 0 or period_rate_ip > 0:
         claims = add_hospital_claim_date_filter(claims, relative_price_g, start_date, start_date_ip, end_date  )
         claims = claims.prefetch_related(Prefetch('items', queryset=ClaimItem.objects.filter(legacy_id__isnull=True).filter(product = product)))\
                 .prefetch_related(Prefetch('services', queryset=ClaimService.objects.filter(legacy_id__isnull=True).filter(product = product)))
