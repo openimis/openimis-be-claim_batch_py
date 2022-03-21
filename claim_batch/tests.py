@@ -90,6 +90,10 @@ class BatchRunTest(TestCase):
         )
         errors = validate_and_process_dedrem_claim(claim1, self.user, True)
 
+        # add process stamp for claim
+        claim1.process_stamp = "2019-06-15"
+        claim1.save()
+
         self.assertEqual(len(errors), 0)
         self.assertEqual(
             claim1.status,
@@ -105,7 +109,7 @@ class BatchRunTest(TestCase):
         _, days_in_month = calendar.monthrange(claim1.process_stamp.year, claim1.process_stamp.month)
         end_date = datetime.datetime(claim1.process_stamp.year, claim1.process_stamp.month, days_in_month)
         print(claim1.process_stamp.year)
-        print(claim1.process_stamp.month,)
+        print(claim1.process_stamp.month)
         print(days_in_month)
         print(end_date)
         do_process_batch(
