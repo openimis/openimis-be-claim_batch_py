@@ -1,3 +1,6 @@
+import calendar
+import datetime
+
 from claim.gql_mutations import validate_and_process_dedrem_claim
 from claim.models import ClaimDedRem, Claim
 from claim.test_helpers import (
@@ -99,11 +102,12 @@ class BatchRunTest(TestCase):
         self.assertEquals(dedrem.rem_g, 500)  # 100*2 + 100*3
 
         # When
+        _, days_in_month = calendar.monthrange(claim1.process_stamp.year, claim1.process_stamp.month)
+        end_date = datetime.datetime(claim1.process_stamp.year, claim1.process_stamp.month, days_in_month)
         do_process_batch(
             self.user.id_for_audit,
             None,
-            claim1.process_stamp.month,
-            claim1.process_stamp.year,
+            end_date
         )
 
         claim1.refresh_from_db()
