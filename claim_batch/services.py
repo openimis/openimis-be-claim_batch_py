@@ -378,9 +378,9 @@ def do_process_batch(audit_user_id, location_id, end_date):
                 for item in claim.items.all():
                     remunerated_amount = item.remunerated_amount + remunerated_amount if item.remunerated_amount else remunerated_amount
                 if remunerated_amount > 0:
-                    claim.status = Claim.STATUS_VALUATED
                     claim.valuated = remunerated_amount
                     claim.save()
+                claim.status = Claim.STATUS_VALUATED
                 claim.batch_run = work_data["created_run"]
                 claim.save()
 
