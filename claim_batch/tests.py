@@ -104,6 +104,8 @@ class BatchRunTest(TestCase):
         # When
         _, days_in_month = calendar.monthrange(claim1.process_stamp.year, claim1.process_stamp.month)
         end_date = datetime.datetime(claim1.process_stamp.year, claim1.process_stamp.month, days_in_month)
+        print(claim1.process_stamp.year)
+        print(claim1.process_stamp.month,)
         print(days_in_month)
         print(end_date)
         do_process_batch(
