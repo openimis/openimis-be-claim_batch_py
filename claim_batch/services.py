@@ -296,7 +296,8 @@ def do_process_batch(audit_user_id, location_id, end_date):
             work_data["payment_plans"] = PaymentPlan.objects\
                 .filter(date_valid_to__gte=start_date)\
                 .filter(date_valid_from__lte=end_date)\
-                .filter(benefit_plan=product)
+                .filter(benefit_plan=product)\
+                .filter(is_deleted=False)
             # 1.3 retrive all the Item & service per product
             # to be checked if we need to pull the claim too
             work_data["items"] = ClaimItem.objects\
@@ -377,6 +378,7 @@ def do_process_batch(audit_user_id, location_id, end_date):
                 for item in claim.items.all():
                     remunerated_amount = item.remunerated_amount + remunerated_amount if item.remunerated_amount else remunerated_amount
                 if remunerated_amount > 0:
+                    claim.status = Claim.STATUS_VALUATED
                     claim.valuated = remunerated_amount
                     claim.save()
                 claim.batch_run = work_data["created_run"]
@@ -390,7 +392,8 @@ def do_process_batch(audit_user_id, location_id, end_date):
                     rcr = run_calculation_rules(payment_plan, "BatchPayment", None,
                                                 work_data=work_data, audit_user_id=audit_user_id,
                                                 location_id=location_id, start_date=start_date, end_date=end_date)
-                    logger.debug("conversion processed for: %s", rcr[0][0])
+                    if rcr:
+                        logger.debug("conversion processed for: %s", rcr[0][0])
 
             # save the batch run into db
             logger.debug("do_process_batch created run: %s", created_run.id)
