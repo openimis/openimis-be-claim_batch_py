@@ -106,10 +106,10 @@ class BatchRunTest(TestCase):
         self.assertEquals(dedrem.rem_g, 500)  # 100*2 + 100*3
 
         # When
-        _, days_in_month = calendar.monthrange(claim1.process_stamp.year, claim1.process_stamp.month)
-        end_date = datetime.datetime(claim1.process_stamp.year, claim1.process_stamp.month, days_in_month)
-        print(claim1.process_stamp.year)
-        print(claim1.process_stamp.month)
+        _, days_in_month = calendar.monthrange(claim1.validity_from.year, claim1.validity_from.month)
+        end_date = datetime.datetime(claim1.validity_from.year, claim1.validity_from.month, days_in_month)
+        print(claim1.validity_from.year)
+        print(claim1.validity_from.month)
         print(days_in_month)
         print(end_date)
         do_process_batch(
