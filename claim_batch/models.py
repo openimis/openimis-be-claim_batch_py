@@ -85,6 +85,15 @@ class RelativeDistribution(models.Model):
         db_table = 'tblRelDistr'
 
 
+    CARE_TYPE_OUT_PATIENT = "O"
+    CARE_TYPE_IN_PATIENT = "I"
+    CARE_TYPE_BOTH = "B"
+
+    TYPE_MONTH = 12
+    TYPE_QUARTER = 4
+    TYPE_YEAR = 1
+
+
 class CapitationPayment(core_models.VersionedModel):
     id = models.AutoField(db_column='CapitationPaymentID', primary_key=True)
     uuid = models.CharField(db_column='CapitationPaymentUUID', max_length=36, default=uuid.uuid4, unique=True)
@@ -170,3 +179,4 @@ class CapitationPayment(core_models.VersionedModel):
 
     class Meta:
         db_table = 'tblCapitationPayment'
+

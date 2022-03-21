@@ -3,17 +3,22 @@ import datetime
 import uuid
 import logging
 
+
 import core
 import pandas as pd
+from datetime import date
 from claim.models import ClaimItem, Claim, ClaimService, ClaimDetail
-from claim_batch.models import BatchRun, RelativeIndex, RelativeDistribution, CapitationPayment
+from claim_batch.models import BatchRun, RelativeIndex, RelativeDistribution
 from django.db import connection, transaction
-from django.db.models import Value, F, Sum
+from django.db.models import Value, F, Sum, Q, Prefetch, Count
 from django.db.models.functions import Coalesce, ExtractMonth, ExtractYear
 from django.utils.translation import gettext as _
 from location.models import HealthFacility, Location
 from product.models import Product, ProductItemOrService
 from core.signals import *
+from contribution.models import Premium
+from contribution_plan.models import PaymentPlan
+from calculation.services import run_calculation_rules
 
 logger = logging.getLogger(__name__)
 
@@ -118,210 +123,6 @@ class ProcessBatchService(object):
             .filter(validity_to__isnull=True)\
             .exists()
 
-
-@transaction.atomic
-def relative_index_calculation_monthly(rel_type, period, year, location_id, product_id, audit_user_id):
-    # TODO (from stored proc) !!!! Check first if not existing in the meantime !!!!!!!
-
-    if rel_type == RelativeIndex.TYPE_MONTH:
-        month_start = period
-        month_end = period
-    elif rel_type == RelativeIndex.TYPE_QUARTER:
-        # There is a similar bit of code in calling function but still different, just copying for now
-        month_start = period * 3 - 2
-        month_end = period * 3
-    elif rel_type == RelativeIndex.TYPE_YEAR:
-        month_start = 1
-        month_end = 12
-    else:
-        raise Exception("relative type should be month(12), quarter(4) or year(1)")
-
-    with transaction.atomic():
-        date = datetime.date(year, period, 1)
-        # We don't import the localized calendar because this process is currently based on gregorian calendar
-        _, days_in_month = calendar.monthrange(year, period)
-        end_date = datetime.date(year, period, days_in_month)
-
-        # For some reason the temp table is not always deleted when we arrive here, so we generate a random name
-        table_name = "#Numerator" + uuid.uuid4().hex
-        cursor = connection.cursor()
-        cursor.execute(f"""
-        CREATE TABLE {table_name}
-        (
-            LocationId int,
-            ProdID     int,
-            Value      decimal(18, 2),
-            WorkValue  int
-        )
-        """)
-
-        for month in range(month_start, month_end + 1):
-            # insert into numerator (location_id, product_id, value, work_value)
-            # The Django approach to that query doesn't work in Django 2 as it needs a boolean condition on the F in When
-            # Policy.objects\
-            #     .filter(validity_to__isnull=True)\
-            #     .filter(premium__validity_to__isnull=True)\
-            #     .filter(product__validity_to__isnull=True)\
-            #     .annotate(nn_product_location_id=Coalesce("product__location_id", Value(-1)))\
-            #     .filter(nn_product_location_id=location_id if location_id else -1)\
-            #     .filter(Q(product_id=product_id) | Q(product_id=0))\
-            #     .exclude(status=Policy.STATUS_IDLE)\
-            #     .filter(premium__pay_date__lt=F("expiry_date"))\
-            #     .annotate(allocated=
-            #               Case(
-            #                   When(
-            #                       ExtractMonth(F("policy__expiry_date")-1)==month,
-            #                       then=Value(1)
-            #                   )
-            #               )
-            #     )
-
-            # Note that pyodbc doesn't support named parameters, so Django will turn all parameters into ? which won't
-            # match the parameters anymore (order and multiple times the same name) => not dict, just a list
-            # also isnull(%s, -1) fails to bind when the value is... null => composition the condition
-            params = [
-                month, year, date, date, date, date, month, year, days_in_month, date, end_date, date, days_in_month,
-            ]
-            if location_id:
-                sql_location_condition = " AND Prod.LocationId=%s "
-                params.append(location_id)
-            else:
-                sql_location_condition = " AND Prod.LocationId is null "
-            params += [product_id, product_id]
-
-            sql = f"""
-                INSERT INTO {table_name} (LocationId, ProdID, Value, WorkValue)
-                --Get all the payment falls under the current month and assign it to Allocated
-                SELECT NumValue.LocationId, NumValue.ProdID, ISNULL(SUM(NumValue.Allocated), 0) Allocated, 1
-                FROM (
-                         SELECT L.LocationId, Prod.ProdID,
-                                CASE
-                                    WHEN MONTH(DATEADD(D, -1, PL.ExpiryDate)) = %s AND
-                                         YEAR(DATEADD(D, -1, PL.ExpiryDate)) = %s AND (DAY(PL.ExpiryDate)) > 1
-                                        THEN CASE
-                                                 WHEN DATEDIFF(D,
-                                                     CASE WHEN PR.PayDate < %s THEN %s ELSE PR.PayDate END,
-                                                        PL.ExpiryDate) = 0 THEN 1
-                                                 ELSE DATEDIFF(D,
-                                                     CASE
-                                                         WHEN PR.PayDate < %s THEN %s
-                                                         ELSE PR.PayDate END, PL.ExpiryDate)
-                                             END
-                                             * ((SUM(PR.Amount)) / (
-                                                 CASE
-                                                     WHEN (DATEDIFF(DAY,
-                                                         CASE
-                                                             WHEN PR.PayDate < PL.EffectiveDate
-                                                                 THEN PL.EffectiveDate
-                                                             ELSE PR.PayDate
-                                                         END,
-                                                         PL.ExpiryDate)) <= 0 THEN 1
-                                                     ELSE DATEDIFF(
-                                                             DAY,
-                                                             CASE
-                                                                 WHEN PR.PayDate < PL.EffectiveDate
-                                                                     THEN PL.EffectiveDate
-                                                                 ELSE PR.PayDate END,
-                                                             PL.ExpiryDate) END))
-                                    WHEN MONTH(CASE
-                                                   WHEN PR.PayDate < PL.EffectiveDate THEN PL.EffectiveDate
-                                                   ELSE PR.PayDate
-                                               END) = %s
-                                         AND YEAR(CASE
-                                                  WHEN PR.PayDate < PL.EffectiveDate
-                                                      THEN PL.EffectiveDate
-                                                  ELSE PR.PayDate
-                                                  END) = %s
-                                        THEN ((%s + 1 - DAY(CASE
-                                                                          WHEN PR.PayDate < PL.EffectiveDate
-                                                                              THEN PL.EffectiveDate
-                                                                          ELSE PR.PayDate END)) *
-                                              ((SUM(PR.Amount)) /
-                                               CASE
-                                                  WHEN DATEDIFF(DAY, CASE
-                                                                         WHEN PR.PayDate < PL.EffectiveDate
-                                                                             THEN PL.EffectiveDate
-                                                                         ELSE PR.PayDate
-                                                                     END,
-                                                                PL.ExpiryDate) <= 0 THEN 1
-                                                  ELSE DATEDIFF(DAY, CASE
-                                                                         WHEN PR.PayDate < PL.EffectiveDate
-                                                                             THEN PL.EffectiveDate
-                                                                         ELSE PR.PayDate END,
-                                                                PL.ExpiryDate)
-                                               END))
-                                    WHEN PL.EffectiveDate < %s AND PL.ExpiryDate > %s AND PR.PayDate < %s
-                                        THEN %s * (SUM(PR.Amount) /
-                                            CASE
-                                              WHEN (DATEDIFF(DAY, CASE
-                                                                      WHEN PR.PayDate < PL.EffectiveDate
-                                                                          THEN PL.EffectiveDate
-                                                                      ELSE PR.PayDate END,
-                                                             DATEADD(D, -1, PL.ExpiryDate))) <=
-                                                   0 THEN 1
-                                              ELSE DATEDIFF(DAY, CASE
-                                                                     WHEN PR.PayDate < PL.EffectiveDate
-                                                                         THEN PL.EffectiveDate
-                                                                     ELSE PR.PayDate END,
-                                                            PL.ExpiryDate) END)
-                                    END Allocated
-                         FROM tblPremium PR
-                                  INNER JOIN tblPolicy PL ON PR.PolicyID = PL.PolicyID
-                                  INNER JOIN tblProduct Prod ON PL.ProdID = Prod.ProdID
-                                  LEFT JOIN tblLocations L ON ISNULL(Prod.LocationId, -1) = ISNULL(L.LocationId, -1)
-                         WHERE PR.ValidityTo IS NULL
-                           AND PL.ValidityTo IS NULL
-                           AND Prod.ValidityTo IS NULL
-                           {sql_location_condition}
-                           AND (Prod.ProdID=%s or %s=0)
-                           AND PL.PolicyStatus <> 1
-                           AND PR.PayDate <= PL.ExpiryDate
-
-                         GROUP BY L.LocationId, Prod.ProdID, PR.Amount, PR.PayDate, PL.ExpiryDate, PL.EffectiveDate
-                     ) NumValue
-                GROUP BY LocationId, ProdID
-            """
-            cursor.execute(sql, params)
-
-        # The above query was run for each month in range with WorkValue=1. We group the data with WorkValue=0
-        # and then delete the =1 data.
-        cursor.execute(f"""
-            INSERT INTO {table_name} (LocationId, ProdID, Value, WorkValue)
-            SELECT LocationId, ProdID, ISNULL(SUM(Value), 0) Allocated, 0
-            FROM {table_name}
-            GROUP BY LocationId, ProdID
-        """)
-        cursor.execute(f"""
-            DELETE FROM {table_name} WHERE WorkValue = 1
-        """)
-
-        cursor.execute(f"SELECT ProdID, Value FROM {table_name}")
-        rel_price_mapping = [
-            ("period_rel_prices", "B"),
-            ("period_rel_prices_ip", "I"),
-            ("period_rel_prices_op", "O")
-        ]
-        for prod_id, prod_value in cursor.fetchall():
-            product = Product.objects.filter(id=prod_id).first()
-            if rel_type == RelativeIndex.TYPE_MONTH:
-                for rel_price_item, rel_price_type in rel_price_mapping:
-                    if product and getattr(product, rel_price_item) == Product.RELATIVE_PRICE_PERIOD_MONTH:
-                        create_relative_index(prod_id, prod_value, year, rel_type, location_id, audit_user_id,
-                                              rel_price_type, period=period)
-
-            if rel_type == RelativeIndex.TYPE_QUARTER:
-                for rel_price_item, rel_price_type in rel_price_mapping:
-                    if product and getattr(product, rel_price_item) == Product.RELATIVE_PRICE_PERIOD_QUARTER:
-                        create_relative_index(prod_id, prod_value, year, rel_type, location_id, audit_user_id,
-                                              rel_price_type, month_start=month_start, month_end=month_end)
-
-            if rel_type == RelativeIndex.TYPE_YEAR:
-                for rel_price_item, rel_price_type in rel_price_mapping:
-                    if product and getattr(product, rel_price_item) == Product.RELATIVE_PRICE_PERIOD_YEAR:
-                        create_relative_index(prod_id, prod_value, year, rel_type, location_id, audit_user_id,
-                                              rel_price_type)
-
-
 def create_relative_index(prod_id, prod_value, year, relative_type, location_id, audit_user_id, rel_price_type,
                           period=None, month_start=None, month_end=None):
     logger.debug("Creating relative index for product %s with value %s on year %s, type %s, location %s, "
@@ -383,7 +184,7 @@ def create_relative_index(prod_id, prod_value, year, relative_type, location_id,
 
 
 @transaction.atomic
-@register_service_signal('signal_after_claim_batch_module_process_batch_service')
+#@register_service_signal('signal_after_claim_batch_module_process_batch_service')
 def process_batch(audit_user_id, location_id, period, year):
     # declare table tblClaimsIDs
     if location_id == -1:
@@ -399,9 +200,15 @@ def process_batch(audit_user_id, location_id, period, year):
 
     if already_run_batch:
         return [str(ProcessBatchSubmitError(2))]
-
+    _, days_in_month = calendar.monthrange(year, period)
+    end_date = datetime.datetime(year, period, days_in_month)
+    now = datetime.datetime.now()
+    # TODO - double check this condition
+    #if end_date < now:
+    #    return [str(ProcessBatchSubmitError(3))]
+        ## TODO create message "Batch cannot be run before the end of the selected period"
     try:
-        do_process_batch(audit_user_id, location_id, period, year)
+        do_process_batch(audit_user_id, location_id, end_date)
     except (KeyboardInterrupt, SystemExit):
         raise
     except Exception as exc:
@@ -428,202 +235,366 @@ def _get_capitation_region_and_district(location_id):
     return region_id, district_id
 
 
-def do_process_batch(audit_user_id, location_id, period, year):
+def do_process_batch(audit_user_id, location_id, end_date):
     processed_ids = set()  # As we update claims, we add the claims not in relative pricing and then update the status
+    period = end_date.month
+    year = end_date.year
     logger.debug("do_process_batch location %s for %s/%s", location_id, period, year)
-    relative_index_calculation_monthly(rel_type=12, period=period, year=year, location_id=location_id, product_id=0,
-                                       audit_user_id=audit_user_id)
-    if period == 3:
-        logger.debug("do_process_batch generating Q1")
-        relative_index_calculation_monthly(rel_type=4, period=1, year=year, location_id=location_id, product_id=0,
-                                           audit_user_id=audit_user_id)
-    if period == 6:
-        logger.debug("do_process_batch generating Q2")
-        relative_index_calculation_monthly(rel_type=4, period=2, year=year, location_id=location_id, product_id=0,
-                                           audit_user_id=audit_user_id)
-    if period == 9:
-        logger.debug("do_process_batch generating Q2")
-        relative_index_calculation_monthly(rel_type=4, period=3, year=year, location_id=location_id, product_id=0,
-                                           audit_user_id=audit_user_id)
-    if period == 12:
-        logger.debug("do_process_batch generating Q4 and Year")
-        relative_index_calculation_monthly(rel_type=4, period=4, year=year, location_id=location_id, product_id=0,
-                                           audit_user_id=audit_user_id)
-        relative_index_calculation_monthly(rel_type=1, period=1, year=year, location_id=location_id, product_id=0,
-                                           audit_user_id=audit_user_id)
-
-    for svc_item in [ClaimItem, ClaimService]:
-        logger.debug("do_process_batch Checking %s",
-                     "ClaimItem" if isinstance(svc_item, ClaimItem) else "ClaimService")
-        prod_qs = svc_item.objects \
-            .filter(claim__status=Claim.STATUS_PROCESSED) \
-            .filter(claim__validity_to__isnull=True) \
-            .filter(validity_to__isnull=True) \
-            .filter(status=svc_item.STATUS_PASSED) \
-            .filter(price_origin=ProductItemOrService.ORIGIN_RELATIVE) \
-            .annotate(prod_location=Coalesce("product__location_id", Value(-1))) \
-            .filter(prod_location=location_id if location_id else -1)
-
-        product_loop = prod_qs.values(
-            "claim__health_facility__level", "product_id", "product__period_rel_prices",
-            "product__period_rel_prices_op",
-            "product__period_rel_prices_ip", "claim__process_stamp__month", "claim__process_stamp__year") \
-            .distinct()
-        logger.debug("do_process_batch queried")
-        for product in product_loop:
-            index = -1
-            target_month = product["claim__process_stamp__month"]
-            target_year = product["claim__process_stamp__year"]
-            # Will fail with Ethiopian calendar but so will the rest of this procedure
-            target_quarter = int((target_month - 1) / 3) + 1
-
-            logger.debug("do_process_batch target %s/%s Q%s", target_month, target_year, target_quarter)
-            if product["product__period_rel_prices"]:
-                logger.debug("do_process_batch period_rel_prices %s", product["product__period_rel_prices"])
-                prod_rel_price_type = product["product__period_rel_prices"]
-            elif product["claim__health_facility__level"] == 'H' and product["product__period_rel_prices_ip"]:
-                logger.debug("do_process_batch product__period_rel_prices_ip %s", product["product__period_rel_prices_ip"])
-                prod_rel_price_type = product["product__period_rel_prices_ip"]
-            elif product["claim__health_facility__level"] != 'H' and product["product__period_rel_prices_op"]:
-                logger.debug("do_process_batch product__period_rel_prices_op %s", product["product__period_rel_prices_op"])
-                prod_rel_price_type = product["product__period_rel_prices_op"]
-            else:
-                logger.error(f"product {product['product_id']} has an impossible in/out patient or both")
-                raise Exception(f"product {product['product_id']} has an impossible in/out patient or both")
-
-            if prod_rel_price_type == Product.RELATIVE_PRICE_PERIOD_MONTH:
-                logger.debug("do_process_batch Month")
-                index = _get_relative_index(product["product_id"], target_month, target_year,
-                                            RelativeIndex.CARE_TYPE_BOTH,
-                                            RelativeIndex.TYPE_MONTH)
-            if prod_rel_price_type == Product.RELATIVE_PRICE_PERIOD_QUARTER:
-                logger.debug("do_process_batch Quarter")
-                index = _get_relative_index(product["product_id"], target_quarter, target_year,
-                                            RelativeIndex.CARE_TYPE_BOTH, RelativeIndex.TYPE_QUARTER)
-            if prod_rel_price_type == Product.RELATIVE_PRICE_PERIOD_YEAR:
-                logger.debug("do_process_batch Year")
-                index = _get_relative_index(product["product_id"], None, target_year, RelativeIndex.CARE_TYPE_BOTH,
-                                            RelativeIndex.TYPE_YEAR)
-            if prod_rel_price_type not in (Product.RELATIVE_PRICE_PERIOD_MONTH, Product.RELATIVE_PRICE_PERIOD_QUARTER,
-                                           Product.RELATIVE_PRICE_PERIOD_YEAR):
-                logger.error("do_process_batch invalid value for prod_rel_price_type %s", prod_rel_price_type)
-
-            if index > -1:
-                to_update_qs = prod_qs \
-                    .filter(claim__health_facility__level=product["claim__health_facility__level"]) \
-                    .filter(product_id=product["product_id"])
-                processed_ids.update(to_update_qs.values_list("claim_id", flat=True).distinct())
-                updated_count = to_update_qs.update(remunerated_amount=F("price_valuated") * index)
-                logger.debug("do_process_batch updated remunerated_amount count %s", updated_count)
-
-    # Get all the claims in valuated state with no Relative index /Services
-    def filter_valuated_claims(base):
-        return base.objects.filter(claim__status=Claim.STATUS_VALUATED) \
-            .filter(claim__validity_to__isnull=True) \
-            .filter(validity_to__isnull=True) \
-            .filter(status=ClaimDetail.STATUS_PASSED) \
-            .exclude(price_origin='R') \
-            .annotate(prod_location=Coalesce("product__location_id", Value(-1))) \
-            .filter(prod_location=location_id if location_id else -1) \
-            .filter(claim__batch_run_id__isnull=True) \
-            .filter(claim__process_stamp__month=period) \
-            .filter(claim__process_stamp__year=year) \
-            .values("claim_id") \
-            .distinct()
-
-    item_ids = filter_valuated_claims(ClaimItem)
-    service_ids = filter_valuated_claims(ClaimService)
-    logger.debug("do_process_batch item/service counts: %s/%s", item_ids.count(), service_ids.count())  # TODO remove to reduce queries
-
-    processed_ids.update(item_ids.union(service_ids).distinct().values_list("id", flat=True))
-
-    def filter_item_or_service(base):
-        return base.objects \
-            .filter(claim__validity_to__isnull=True) \
-            .annotate(prod_location=Coalesce("product__location_id", Value(-1))) \
-            .filter(prod_location=location_id if location_id else -1) \
-            .filter(remunerated_amount__isnull=True) \
-            .filter(validity_to__isnull=True) \
-            .filter(status=ClaimItem.STATUS_PASSED) \
-            .filter(claim__status=Claim.STATUS_PROCESSED) \
-            .values("claim_id") \
-            .distinct()
-
-    item_prod_ids = filter_item_or_service(ClaimItem)
-    service_prod_ids = filter_item_or_service(ClaimService)
-
-    updated_count = Claim.objects \
-        .filter(status=Claim.STATUS_PROCESSED) \
-        .filter(id__in=processed_ids) \
-        .filter(validity_to__isnull=True) \
-        .exclude(id__in=item_prod_ids) \
-        .exclude(id__in=service_prod_ids) \
-        .update(status=Claim.STATUS_VALUATED)
-    logger.debug("do_process_batch update claims: %s", updated_count)
 
     from core.utils import TimeUtils
     created_run = BatchRun.objects.create(location_id=location_id, run_year=year, run_month=period,
                                           run_date=TimeUtils.now(), audit_user_id=audit_user_id,
                                           validity_from=TimeUtils.now())
     logger.debug("do_process_batch created run: %s", created_run.id)
-    month_start = 0
-    month_end = 0
-    if period in (3, 6, 9):
-        month_start = period - 2
-        month_end = period
-    if period == 12:
-        month_start = 1
-        month_end = 12
 
-    # Link claims to this batch run
-    filter_base = Claim.objects \
-        .filter(id__in=processed_ids) \
-        .filter(status=Claim.STATUS_VALUATED) \
-        .filter(batch_run_id__isnull=True) \
-        .filter(process_stamp__year=year)
+    # 0 prepare the batch run :  does it really make sense per location ? (Ideally per pool but the notion doesn't exist yet)
+    # 0.1 get all product concerned, all product that have are configured for the location
 
-    updated_count = filter_base \
-        .filter(process_stamp__month=period) \
-        .update(batch_run=created_run)
+    # init start dates
+    start_date = None
+    start_date_ip = None
+    #period_quarter = period - 2 if period % 3 == 0 else 0
+    #period_sem = period - 5 if period % 6 == 0 else 0
 
-    logger.debug("do_process_batch updated claims with batch run ref %s", updated_count)
+    products = Product.objects\
+            .filter(validity_to__isnull = True)\
+            .filter(date_from__lte=end_date)\
+            .filter(Q(date_to__gte=end_date) | Q(date_to__isnull=True))\
+            .filter(location_id=location_id)
+    # 1 per product (Ideally per pool but the notion doesn't exist yet)
+    if products:
+        for product in products:
+            relative_price_g = False
+            # assign start date accordin to product
+            if product.period_rel_prices is not None:
+                start_date =  get_start_date(end_date, product.period_rel_prices)
+                relative_price_g = True
+            else:
+                if product.period_rel_prices_op is not None:
+                    start_date =  get_start_date(end_date, product.period_rel_prices_op)
+                    # if only op is defiene fallback ip on the same periodicity
+                    if product.period_rel_prices_ip is  None:
+                        start_date_ip = start_date
+                if product.period_rel_prices_ip is not None:
+                    start_date_ip =  get_start_date(end_date, product.period_rel_prices_ip)
+                    # if only ip is defiene fallback op on the same periodicity
+                    if product.period_rel_prices_op is  None:
+                        start_date = start_date_ip
+            if start_date is None and start_date_ip is None:
+                # fall back on month
+                start_date = get_start_date(end_date, 'M')
+                relative_price_g = True
 
-    # If more than a month was run
-    if month_start > 0:
-        updated_count = filter_base \
-            .filter(process_stamp__month__gte=month_start) \
-            .filter(process_stamp__month__lte=month_end) \
-            .update(batch_run=created_run)
-        logger.debug("do_process_batch updated claims *range* with batch run ref %s", updated_count)
+            work_data = {}
+            work_data["created_run"] = created_run
+            work_data["product"] = product
+            work_data["start_date"] = start_date
+            work_data["start_date_ip"] = start_date_ip
+            work_data["end_date"] = end_date
+            work_data["relative_price_g"]  = relative_price_g
+            # 1.2 get all the payment plan per product
+            work_data["payment_plans"] = PaymentPlan.objects\
+                .filter(date_valid_to__gte=start_date)\
+                .filter(date_valid_from__lte=end_date)\
+                .filter(benefit_plan=product)\
+                .filter(is_deleted=False)
+            # 1.3 retrive all the Item & service per product
+            # to be checked if we need to pull the claim too
+            work_data["items"] = ClaimItem.objects\
+                .filter(validity_to__isnull=True)\
+                .filter(claim__process_stamp__lte=end_date)\
+                .filter(claim__process_stamp__gte=start_date)\
+                .filter(product=product)\
+                .select_related('claim__health_facility')\
+                .order_by('claim__health_facility').order_by('claim_id')
+            work_data["services"] = ClaimService.objects\
+                .filter(claim__process_stamp__lte=end_date)\
+                .filter(claim__process_stamp__gte=start_date)\
+                .filter(validity_to__isnull=True)\
+                .filter(product=product)\
+                .select_related('claim__health_facility')\
+                .order_by('claim__health_facility').order_by('claim_id')
+            # 1.4 retrive all contributions per product // process_stamp should be the creation date
+            work_data["contributions"] = Premium.objects \
+                .filter(validity_from__lte=end_date) \
+                .filter(validity_from__gte=start_date) \
+                .filter(validity_to__isnull=True)\
+                .filter(policy__product=product)\
+                .select_related('policy')
 
-    capitation_payment_products = []
-    for svc_item in [ClaimItem, ClaimService]:
-        capitation_payment_products.extend(
-            svc_item.objects
-                    .filter(claim__status=Claim.STATUS_VALUATED)
-                    .filter(claim__validity_to__isnull=True)
-                    .filter(validity_to__isnull=True)
-                    .filter(status=svc_item.STATUS_PASSED)
-                    .annotate(prod_location=Coalesce("product__location_id", Value(-1)))
-                    .filter(prod_location=location_id if location_id else -1)
-                    .values('product_id')
-                    .distinct()
-        )
+            # 2 batchRun pre-calculation
+            # update the service and item valuated amount 
 
-    region_id, district_id = _get_capitation_region_and_district(location_id)
-    for product in set(map(lambda x: x['product_id'], capitation_payment_products)):
-        params = {
-            'region_id': region_id,
-            'district_id': district_id,
-            'prod_id': product,
-            'year': year,
-            'month': period,
-        }
-        is_report_data_available = get_commision_payment_report_data(params)
-        if not is_report_data_available:
-            process_capitation_payment_data(params)
+            if start_date is not None:
+                allocated_contributions = get_allocated_premium(work_data["contributions"], start_date, end_date)
+                work_data['allocated_contributions'] = allocated_contributions
+                # prevent calculation of 2 time the same thing
+                if start_date == start_date_ip:
+                    allocated_contributions_ip = allocated_contributions
+                    work_data['allocated_contributions_ip'] = allocated_contributions_ip
+            if start_date_ip is not None and start_date != start_date_ip :
+                allocated_contributions_ip = get_allocated_premium(work_data["contributions"], start_date_ip, end_date)
+                work_data['allocated_contributions_ip'] = allocated_contributions_ip
+            
+            claims = Claim.objects\
+                .filter(validity_from__lte=end_date)\
+                .filter(validity_from__gte=start_date)\
+                .filter(validity_to__isnull=True)\
+                .filter(process_stamp__lte=end_date)\
+                .filter((Q(items__product=product) | Q(services__product=product)))
+            work_data['claims'] = claims
+            # adds the filter to includ only the claims according the start/stop and cieling definition 
+            claims = add_hospital_claim_date_filter(claims, relative_price_g, start_date, start_date_ip, end_date, product.ceiling_interpretation)
+            # prefectch Item and services
+
+            claim_batch_valuation(work_data)
+
+            # 2.1 [for the futur if there is any need ]filter a calculation valid for batchRun with context BatchPrepare (got via 0.2): like allocated contribution
+            #if work_data.paymentplans:
+            #    for paymentplan in work_data.paymentplans:
+            #        if paymentplan.calculation.active_for_object(batch_run, 'BatchPrepare'):
+            #            # work_data gets updated with relevant data such as work_data.allocated_contribution
+            #            paymentplan.calculation.calculate(work_data, 'BatchPrepare'))
+            #        # 3 Generate Batchvaluation:
+            #        # 3.1 filter a calculation valid for batchRun with context BatchValuation (got via 0.2)
+            #        if paymentplan.calculation.active_for_object(batch_run, 'BatchValuate'):
+            #        # 3.2 Execute the calculation per Item or service (not claims)
+            #            paymentplan.calculation.calculate(work_data, 'BatchValuate'))
+            #else:
+            #    logger.info("no payment plan product found for product  %s for %s/%s", product_id, period, year)
+            # 4 update the claim Total amounts if all Item and services got "valuated"
+
+
+            # could be duplicates - distinct
+            claims = claims.prefetch_related(Prefetch('items', queryset=ClaimItem.objects.filter(legacy_id__isnull=True)))\
+                .prefetch_related(Prefetch('services', queryset=ClaimService.objects.filter(legacy_id__isnull=True)))
+            claims = list(claims.values_list('id', flat=True).distinct())
+            claims = Claim.objects.filter(id__in=claims)
+
+            for claim in claims:
+                remunerated_amount = 0
+                for service in claim.services.all():
+                    remunerated_amount = service.remunerated_amount + remunerated_amount if service.remunerated_amount else remunerated_amount
+                for item in claim.items.all():
+                    remunerated_amount = item.remunerated_amount + remunerated_amount if item.remunerated_amount else remunerated_amount
+                if remunerated_amount > 0:
+                    claim.valuated = remunerated_amount
+                    claim.save()
+                claim.status = Claim.STATUS_VALUATED
+                claim.batch_run = work_data["created_run"]
+                claim.save()
+
+            # 5 Generate BatchPayment per product (Ideally per pool but the notion doesn't exist yet)
+            # 5.1 filter a calculation valid for batchRun with context BatchPayment (got via 0.2)
+            if work_data["payment_plans"]:
+                for payment_plan in work_data["payment_plans"]:
+                    # 54.2 Execute the converter per product/batch run/claim (not claims)
+                    rcr = run_calculation_rules(payment_plan, "BatchPayment", None,
+                                                work_data=work_data, audit_user_id=audit_user_id,
+                                                location_id=location_id, start_date=start_date, end_date=end_date)
+                    if rcr:
+                        logger.debug("conversion processed for: %s", rcr[0][0])
+
+            # save the batch run into db
+            logger.debug("do_process_batch created run: %s", created_run.id)
+    else:
+        logger.info("no product found in  %s for %s/%s", location_id, period, year)
+
+
+# Calculate allcated contributions
+def get_allocated_premium(premiums, start_date, end_date):
+    # go trough the contribution and find the allocated contribution 
+    allocated_premiums = 0
+    for premium in premiums:
+        allocation_start = max(premium.policy.effective_date, start_date)
+        allocation_stop = min(start_date, premium.policy.expiry_date)
+        policy_duration = premium.policy.expiry_date - premium.policy.effective_date
+        allocated_premiums += premium.amount * (allocation_stop - allocation_start) / policy_duration
+    return allocated_premiums
+
+
+def get_period( start_date, end_date):
+    # TODO do function that returns such values M/Q/Y , 1-12/1-4/1
+    period_type = None
+    period_id = None
+    if start_date.month == end_date.month:
+        period_type = '12'
+        period_id = end_date.month
+    elif start_date.month % 3 == 1 and  end_date.month % 3 == 0 :
+        period_type = '4'
+        period_id = end_date.month / 3
+    elif start_date.month % 6 == 1 and  end_date.month % 6 == 0 :
+        period_type = '2'
+        period_id = end_date.month / 6
+    elif start_date.month == 1 and  end_date.month == 12 :
+        period_type = '1'
+        period_id = '12'
+
+    return period_type, period_id
+
+
+def get_start_date(end_date, relative_price):
+    # create the possible start dates 
+    year = end_date.year
+    month = end_date.month
+    start_date_month = datetime.date(year, month, 1)
+    start_date_quarter = datetime.date(year, month - 2, 1) if month % 3 == 0 else None
+    start_date_year = datetime.date(year, 1, 1) if month == 12 else None
+    start_date_sem = datetime.date(year, month - 5, 1) if month % 6 == 0 else None
+    if relative_price == 'Y':
+        return start_date_year
+    elif relative_price == 'Q':
+        return start_date_quarter    
+    elif relative_price == 's':
+        return start_date_sem
+    elif relative_price == 'M':
+        return start_date_month
+    else:
+        return None
+
+
+def add_hospital_claim_date_filter(claims_queryset, relative_price_g, start_date, start_date_ip, end_date, ceiling_interpretation):
+    cond_op = None
+    cond_ip = None
+    if relative_price_g or start_date == start_date_ip:
+        claims_queryset = claims_queryset.filter(process_stamp__range=[start_date, end_date])
+    else: 
+        if start_date is not None:
+            cond_op = Q(process_stamp__range=[start_date, end_date]) & ~get_hospital_claim_filter(ceiling_interpretation)
+        if start_date is not None:
+            cond_ip = Q(process_stamp__range=[start_date_ip, end_date]) & get_hospital_claim_filter(ceiling_interpretation)
+        if cond_op is not None and cond_ip is not None:
+            claims_queryset = claims_queryset.filter(cond_op | cond_ip)
+        elif cond_op is not None:
+            claims_queryset = claims_queryset.filter(cond_op)
+        elif cond_ip is not None:
+            claims_queryset = claims_queryset.filter(cond_ip)
         else:
-            logger.debug(F"Capitation payment data for {params} already exists")
+            # kill the queryset because it is not possible
+            claims_queryset = claims_queryset.filter(id=-1)
+
+    return claims_queryset
+
+
+def get_hospital_claim_filter(ceiling_interpretation):
+    if ceiling_interpretation == Product.CEILING_INTERPRETATION_HOSPITAL:
+        return Q(health_facility_level=HealthFacility.LEVEL_HOSPITAL)
+    else:
+        return Q(date_to__isnull=False) & Q(date_to__gt=F('date_from'))
+
+
+# update the service and item valuated amount 
+def claim_batch_valuation(work_data):
+    allocated_contributions = work_data["allocated_contributions"]
+    allocated_contributions_ip = work_data["allocated_contributions_ip"] if "allocated_contributions_ip" in work_data else None
+    relative_price_g = work_data["relative_price_g"]
+    product = work_data["product"]
+    items = work_data["items"]
+    services = work_data["services"]
+    start_date = work_data["start_date"]
+    start_date_ip = work_data["start_date_ip"]
+    end_date = work_data["end_date"]
+    claims = work_data["claims"]
+
+    # Sum up all item and service amount
+    value_hospital = 0
+    value_non_hospital = 0
+    index = 0
+    index_ip = 0
+
+    # if there is no configuration the relative index will be set to 100 %
+    if start_date is not None or start_date_ip is not None:
+        claims = add_hospital_claim_date_filter(claims, relative_price_g, start_date, start_date_ip, end_date, product.ceiling_interpretation)
+        claims = claims.prefetch_related(Prefetch('items', queryset=ClaimItem.objects.filter(legacy_id__isnull=True).filter(product=product)))\
+                .prefetch_related(Prefetch('services', queryset=ClaimService.objects.filter(legacy_id__isnull=True).filter(product=product)))
+        claims = list(claims.values_list('id', flat=True).distinct())
+        claims = Claim.objects.filter(id__in=claims)
+        # TODO to be replace by 2 queryset +  an Annotate add_hospital_claim_date_filter function could be used
+        for claim in claims:
+            for item in claim.items.all():
+                if is_hospital_claim(product, claim):
+                    value_hospital += item.price_valuated if item.price_valuated is not None else 0
+                else:
+                    value_non_hospital += item.price_valuated if item.price_valuated is not None else 0
+
+            for service in claim.services.all():
+                if is_hospital_claim(product, claim):
+                    value_hospital += service.price_valuated if service.price_valuated is not None else 0
+                else:
+                    value_non_hospital += service.price_valuated if service.price_valuated is not None else 0
+                # calculate the index based on product config
+
+        # create i/o index OR in and out patien index
+        if relative_price_g :
+            index = get_relative_price_rate(product, 'B', start_date, end_date,
+                                            allocated_contributions, value_non_hospital + value_hospital)
+        else:
+            if start_date_ip is not None:
+                index_ip = get_relative_price_rate(product, 'I', start_date, end_date, allocated_contributions,
+                                                   value_non_hospital + value_hospital)
+            elif start_date is not None:
+                index = get_relative_price_rate(product, 'O', start_date, end_date, allocated_contributions,
+                                                value_non_hospital + value_hospital)
+
+        # update the item and services 
+        # TODO check if a single UPDATE query is possible       
+        for claim in claims:
+            for item in items:
+                if is_hospital_claim(work_data["product"], item.claim) and (index > 0 or index_ip > 0):
+                    item.amount_remunerated = item.price_valuated * (index if relative_price_g else index_ip)
+                    item.save()
+                elif index > 0:
+                    item.amount_remunerated = item.price_valuated * index
+                    item.save()
+            for service in services:
+                if is_hospital_claim(work_data["product"], service.claim) and (index > 0 or index_ip > 0):
+                    service.amount_remunerated = service.price_valuated * (index if relative_price_g else index_ip)
+                    service.save()
+                elif index > 0:
+                    service.amount_remunerated = service.price_valuated * index
+                    service.save() 
+
+
+# to be moded in product services
+def is_hospital_claim(product, claim):
+    if product.ceiling_interpretation == Product.CEILING_INTERPRETATION_HOSPITAL:
+        return claim.health_facility.level == HealthFacility.LEVEL_HOSPITAL
+    else:
+        return claim.date_to is not None and claim.date_to > claim.date_from
+
+
+# to be moded in product services
+def create_index(product, index , index_type, period_type, period_id):
+    index = RelativeIndex()
+    index.product = product
+    index.type = index_type
+    index.care_type = period_type
+    index.period = period_id
+    from core.utils import TimeUtils
+    index.calc_date = TimeUtils.now(),
+    index.save()
+
+
+# might be added in product service
+def get_relative_price_rate(product, index_type, date_start, end_date, allocated_contributions, sum_r_items_services):
+    period_type, period_id = get_period(date_start, end_date)
+    rel_distribution = RelativeDistribution.objects.filter(product=product)\
+        .filter(period=period_id)\
+        .filter(type=period_type)\
+        .filter(care_type=index_type)\
+        .filter(legacy_id__isnull=True)
+    if rel_distribution.count() > 0:
+        rel_distribution = rel_distribution.first()
+        rel_rate = rel_distribution.percent
+        # TODO to be checked if rel_distribution perecentage is 0
+        if rel_rate:
+            index = (rel_rate * allocated_contributions) / sum_r_items_services
+            create_index(product, index, index_type, period_type, period_id)
+            return index
+        else:
+            return 1
+    else:
+        return 1
 
 
 def _get_relative_index(product_id, relative_period, relative_year, relative_care_type='B', relative_type=12):
