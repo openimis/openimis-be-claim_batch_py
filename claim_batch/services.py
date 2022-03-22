@@ -408,8 +408,9 @@ def get_allocated_premium(premiums, start_date, end_date):
     for premium in premiums:
         allocation_start = max(premium.policy.effective_date, start_date)
         allocation_stop = min(start_date, premium.policy.expiry_date)
-        policy_duration = premium.policy.expiry_date - premium.policy.effective_date
-        allocated_premiums += premium.amount * (allocation_stop - allocation_start) / policy_duration
+        allocation_diff = (allocation_stop - allocation_start).days + 1
+        policy_duration = (premium.policy.expiry_date - premium.policy.effective_date).days + 1
+        allocated_premiums += premium.amount * allocation_diff / policy_duration
     return allocated_premiums
 
 
