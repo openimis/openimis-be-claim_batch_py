@@ -13,7 +13,10 @@ from claim_batch.models import RelativeDistribution
 from claim_batch.services import do_process_batch
 from claim_batch.test_helpers import create_test_rel_distr_range
 from contribution.test_helpers import create_test_payer, create_test_premium
+from contribution_plan.models import PaymentPlan
+from contribution_plan.tests.helpers import create_test_payment_plan
 from core.models import User, InteractiveUser
+from core.services import create_or_update_interactive_user, create_or_update_core_user
 from django.test import TestCase
 from insuree.test_helpers import create_test_insuree
 from medical.test_helpers import create_test_service, create_test_item
@@ -30,12 +33,26 @@ from product.test_helpers import (
 )
 
 
+_TEST_USER_NAME = "test_batch_run"
+_TEST_USER_PASSWORD = "test_batch_run"
+_TEST_DATA_USER = {
+    "username": _TEST_USER_NAME,
+    "last_name": _TEST_USER_NAME,
+    "password": _TEST_USER_PASSWORD,
+    "other_names": _TEST_USER_NAME,
+    "user_types": "INTERACTIVE",
+    "language": "en",
+    "roles": [1, 5, 9],
+}
+
+
 class BatchRunTest(TestCase):
     def setUp(self) -> None:
-        self.i_user = InteractiveUser(
-            login_name="test_batch_run", audit_user_id=-1, id=97891
-        )
-        self.user = User(i_user=self.i_user)
+        i_user, i_user_created = create_or_update_interactive_user(
+            user_id=None, data=_TEST_DATA_USER, audit_user_id=999, connected=False)
+        user, user_created = create_or_update_core_user(
+            user_uuid=None, username=_TEST_DATA_USER["username"], i_user=i_user)
+        self.user = user
 
     def test_simple_batch(self):
         """
@@ -56,6 +73,11 @@ class BatchRunTest(TestCase):
                 "lump_sum": 10_000,
                 "period_rel_prices": Product.RELATIVE_PRICE_PERIOD_MONTH,
             },
+        )
+        payment_plan = create_test_payment_plan(
+            product=product,
+            calculation="0a1b6d54-eef4-4ee6-ac47-2a99cfa5e9a8",
+            custom_props={'date_valid_from': '2019-01-01', 'date_valid_to': '2050-01-01'}
         )
         create_test_rel_distr_range(
             product.id,
@@ -136,4 +158,5 @@ class BatchRunTest(TestCase):
         item.delete()
         product.relativeindex_set.all().delete()
         product.relative_distributions.all().delete()
+        PaymentPlan.objects.filter(id=payment_plan.id).delete()
         product.delete()
