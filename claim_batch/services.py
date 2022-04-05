@@ -324,8 +324,7 @@ def do_process_batch(audit_user_id, location_id, end_date):
             logger.debug("do_process_batch created work_data for batch run process")
 
             # 2 batchRun pre-calculation
-            # update the service and item valuated amount 
-            logger.debug("do_process_batch BatchRun pre-calculations - update the service and item valuated amount")
+            logger.debug("do_process_batch BatchRun allocated contribution")
             if start_date is not None:
                 allocated_contributions = get_allocated_premium(work_data["contributions"], start_date, end_date)
                 work_data['allocated_contributions'] = allocated_contributions
