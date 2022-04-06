@@ -271,12 +271,8 @@ def do_process_batch(audit_user_id, location_id, end_date):
             work_data["payment_plans"] = get_payment_plan_queryset(product, end_date)
             if work_data["payment_plans"]:
                 for payment_plan in work_data["payment_plans"]:
-                    start_date = get_start_date(end_date, payment_plan.periodicity)            
-                    start_date_str = str(start_date)                  
-                    if start_date_str not in allocated_contribution:  
-                        allocated_contribution[start_date_str] = get_allocated_premium(work_data["contributions"], start_date, end_date)
-                    work_data['allocated_contributions'] = allocated_contribution[start_date_str]
-                    work_data = update_work_data(work_data, product, start_date, end_date, allocated_contribution[str(start_date)])
+                    start_date = get_start_date(end_date, payment_plan.periodicity)
+                    work_data = update_work_data(work_data, product, start_date, end_date, allocated_contribution)
                     # valuate the claims
                     rcr = run_calculation_rules(payment_plan, "BatchValuate", None,
                                                 work_data=work_data, audit_user_id=audit_user_id,
@@ -288,8 +284,8 @@ def do_process_batch(audit_user_id, location_id, end_date):
             # 5.1 filter a calculation valid for batchRun with context BatchPayment (got via 0.2)
             if work_data["payment_plans"]:
                 for payment_plan in work_data["payment_plans"]:
-                    start_date = get_start_date(end_date, payment_plan.periodicity)          
-                    work_data = update_work_data(work_data, product, start_date, end_date, allocated_contribution[str(start_date)])
+                    start_date = get_start_date(end_date, payment_plan.periodicity)
+                    work_data = update_work_data(work_data, product, start_date, end_date, allocated_contribution)
                     # 54.2 Execute the converter per product/batch run/claim (not claims)
                     rcr = run_calculation_rules(payment_plan, "BatchPayment", None,
                                                 work_data=work_data, audit_user_id=audit_user_id,
@@ -303,14 +299,17 @@ def do_process_batch(audit_user_id, location_id, end_date):
         logger.info("no product found in  %s for %s/%s", location_id, period, year)
 
 
-def update_work_data(work_data, product, start_date, end_date, allocated_contribution):
+def update_work_data(work_data, product, start_date, end_date, allocated_contribution = None):
     work_data["start_date"] = start_date
     # 1.3 generate queryset
     work_data["items"] = get_items_queryset(product, start_date, end_date)
     work_data["services"] = get_services_queryset(product, start_date, end_date)
     work_data["contributions"] = get_contribution_queryset(product, start_date, end_date)
     work_data['claims'] =  get_claim_queryset(product, start_date, end_date)
-    work_data['allocated_contributions'] = allocated_contribution
+    start_date_str = str(start_date)
+    if start_date_str not in allocated_contribution:
+        allocated_contribution[start_date_str] = get_allocated_premium(work_data["contributions"], start_date, end_date)
+    work_data['allocated_contributions'] = allocated_contribution[start_date_str]
     return work_data
 
 
@@ -340,7 +339,7 @@ def get_services_queryset(product, start_date, end_date):
         .filter(product=product)\
         .select_related('claim__health_facility')\
         .order_by('claim__health_facility').order_by('claim_id')
-    
+
 def get_claim_queryset(product, start_date, end_date):
     return  Claim.objects\
         .filter(validity_from__lte=end_date)\
@@ -348,7 +347,7 @@ def get_claim_queryset(product, start_date, end_date):
         .filter(validity_to__isnull=True)\
         .filter(process_stamp__lte=end_date)\
         .filter((Q(items__product=product) | Q(services__product=product)))
-    
+
 def get_contribution_queryset(product, start_date, end_date):
     return Premium.objects \
         .filter(validity_from__lte=end_date) \
@@ -366,7 +365,7 @@ def get_product_queryset(end_date, location_id):
 
 # Calculate allcated contributions
 def get_allocated_premium(premiums, start_date, end_date):
-    # go trough the contribution and find the allocated contribution 
+    # go trough the contribution and find the allocated contribution
     allocated_premiums = 0
     for premium in premiums:
         allocation_start = max(premium.policy.effective_date, start_date)
@@ -398,7 +397,7 @@ def get_period( start_date, end_date):
 
 
 def get_start_date(end_date, periodicity):
-    # create the possible start dates 
+    # create the possible start dates
     year = end_date.year
     month = end_date.month
     if periodicity == '12':
@@ -406,7 +405,7 @@ def get_start_date(end_date, periodicity):
         return datetime.date(year, 1, 1) if month == 12 else None
     elif periodicity == '3':
         # quarter
-        return datetime.date(year, month - 2, 1) if month % 3 == 0 else None    
+        return datetime.date(year, month - 2, 1) if month % 3 == 0 else None
     elif periodicity == '6':
         #semester
         return datetime.date(year, month - 5, 1) if month % 6 == 0 else None
@@ -580,7 +579,7 @@ def _execute_capitation_payment_procedure(cursor, procedure, params):
                     @HFLevel = @HF;
             """
 
-    cursor.execute(sql, ( 
+    cursor.execute(sql, (
         params.get('region_id', None),
         params.get('district_id', None),
         params.get('prod_id', 0),
