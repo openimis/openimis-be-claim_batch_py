@@ -268,7 +268,7 @@ def do_process_batch(audit_user_id, location_id, end_date):
             logger.debug("do_process_batch created work_data for batch run process")
             allocated_contribution = []
             # 1.2 get all the payment plan per product
-            work_data["payment_plans"] = get_payment_plan_queryset(product, start_date, end_date)
+            work_data["payment_plans"] = get_payment_plan_queryset(product, end_date)
             if work_data["payment_plans"]:
                 for payment_plan in work_data["payment_plans"]:
                     start_date = get_start_date(end_date, payment_plan.periodicity)            
@@ -314,9 +314,9 @@ def update_work_data(work_data, product, start_date, end_date, allocated_contrib
     return work_data
 
 
-def get_payment_plan_queryset(product, start_date, end_date):
+def get_payment_plan_queryset(product, end_date):
     return PaymentPlan.objects\
-        .filter(date_valid_to__gte=start_date)\
+        .filter(date_valid_to__gte=end_date)\
         .filter(date_valid_from__lte=end_date)\
         .filter(benefit_plan=product)\
         .filter(is_deleted=False)
