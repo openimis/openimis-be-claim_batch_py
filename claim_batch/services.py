@@ -376,6 +376,23 @@ def get_allocated_premium(premiums, start_date, end_date):
     return allocated_premiums
 
 
+
+# return the filter base on cieling interpretation and mode (I inpatient, O outpatient), 
+# prefix is required if the queryset is not about claims
+def get_hospital_claim_filter(ceiling_interpretation, mode = 'I', prefix = ''):
+    
+    if ceiling_interpretation == Product.CEILING_INTERPRETATION_HOSPITAL:
+        Qterm = (Q(('%shealth_facility_level' % prefix,HealthFacility.LEVEL_HOSPITAL)))
+    else:
+        Qterm = (Q('%sdate_to__isnull' % prefix,False) & Q('%sdate_to__gt' % prefix,F('date_from')))
+    if mode == 'I':
+        return Qterm
+    elif  mode == 'O':
+        return ~Qterm
+    else:
+        return Q()
+
+
 def get_period( start_date, end_date):
     # TODO do function that returns such values M/Q/Y , 1-12/1-4/1
     period_type = None
