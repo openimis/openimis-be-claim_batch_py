@@ -272,26 +272,30 @@ def do_process_batch(audit_user_id, location_id, end_date):
             if work_data["payment_plans"]:
                 for payment_plan in work_data["payment_plans"]:
                     start_date = get_start_date(end_date, payment_plan.periodicity)
-                    work_data = update_work_data(work_data, product, start_date, end_date, allocated_contribution)
-                    # valuate the claims
-                    rcr = run_calculation_rules(payment_plan, "BatchValuate", None,
-                                                work_data=work_data, audit_user_id=audit_user_id,
-                                                location_id=location_id, start_date=start_date, end_date=end_date)
-                    if rcr:
-                        logger.debug("valuation processed for: %s", rcr[0][0])
+                    # run only when it makes sense based on periodicitiy
+                    if start_date is not None:
+                        allocated_contribution, work_data = update_work_data(work_data, product, start_date, end_date, allocated_contribution)
+                        # valuate the claims
+                        rcr = run_calculation_rules(payment_plan, "BatchValuate", None,
+                                                    work_data=work_data, audit_user_id=audit_user_id,
+                                                    location_id=location_id, start_date=start_date, end_date=end_date)
+                        if rcr:
+                            logger.debug("valuation processed for: %s", rcr[0][0])
 
             # 5 Generate BatchPayment per product (Ideally per pool but the notion doesn't exist yet)
             # 5.1 filter a calculation valid for batchRun with context BatchPayment (got via 0.2)
             if work_data["payment_plans"]:
                 for payment_plan in work_data["payment_plans"]:
                     start_date = get_start_date(end_date, payment_plan.periodicity)
-                    work_data = update_work_data(work_data, product, start_date, end_date, allocated_contribution)
-                    # 54.2 Execute the converter per product/batch run/claim (not claims)
-                    rcr = run_calculation_rules(payment_plan, "BatchPayment", None,
-                                                work_data=work_data, audit_user_id=audit_user_id,
-                                                location_id=location_id, start_date=start_date, end_date=end_date)
-                    if rcr:
-                        logger.debug("conversion processed for: %s", rcr[0][0])
+                    # run only when it makes sense based on periodicitiy
+                    if start_date is not None:
+                        allocated_contribution, work_data = update_work_data(work_data, product, start_date, end_date, allocated_contribution)
+                        # 54.2 Execute the converter per product/batch run/claim (not claims)
+                        rcr = run_calculation_rules(payment_plan, "BatchPayment", None,
+                                                    work_data=work_data, audit_user_id=audit_user_id,
+                                                    location_id=location_id, start_date=start_date, end_date=end_date)
+                        if rcr:
+                            logger.debug("conversion processed for: %s", rcr[0][0])
 
             # save the batch run into db
             logger.debug("do_process_batch created run: %s", created_run.id)
@@ -310,7 +314,7 @@ def update_work_data(work_data, product, start_date, end_date, allocated_contrib
     if start_date_str not in allocated_contribution:
         allocated_contribution[start_date_str] = get_allocated_premium(work_data["contributions"], start_date, end_date)
     work_data['allocated_contributions'] = allocated_contribution[start_date_str]
-    return work_data
+    return allocated_contribution, work_data
 
 
 def get_payment_plan_queryset(product, end_date):
@@ -329,7 +333,7 @@ def get_items_queryset(product, start_date, end_date):
         .filter(claim__process_stamp__gte=start_date)\
         .filter(product=product)\
         .select_related('claim__health_facility')\
-        .order_by('claim__health_facility').order_by('claim_id')
+        .order_by('claim__health_facility').order_by('claim')
 
 def get_services_queryset(product, start_date, end_date):
     return ClaimService.objects\
@@ -338,7 +342,7 @@ def get_services_queryset(product, start_date, end_date):
         .filter(validity_to__isnull=True)\
         .filter(product=product)\
         .select_related('claim__health_facility')\
-        .order_by('claim__health_facility').order_by('claim_id')
+        .order_by('claim__health_facility').order_by('claim')
 
 def get_claim_queryset(product, start_date, end_date):
     return  Claim.objects\
@@ -420,12 +424,18 @@ def get_start_date(end_date, periodicity):
     if periodicity == '12':
         #yearly
         return datetime.date(year, 1, 1) if month == 12 else None
-    elif periodicity == '3':
-        # quarter
-        return datetime.date(year, month - 2, 1) if month % 3 == 0 else None
     elif periodicity == '6':
         #semester
         return datetime.date(year, month - 5, 1) if month % 6 == 0 else None
+    elif periodicity == '4':
+        # quarter
+        return datetime.date(year, month - 4, 1) if month % 4 == 0 else None
+    elif periodicity == '3':
+        # quarter
+        return datetime.date(year, month - 2, 1) if month % 3 == 0 else None
+    elif periodicity == '2':
+        # quarter
+        return datetime.date(year, month - 1, 1) if month % 2 == 0 else None
     elif periodicity == '1':
         #monthy
         return datetime.date(year, month, 1)
