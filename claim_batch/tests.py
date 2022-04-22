@@ -76,8 +76,29 @@ class BatchRunTest(TestCase):
         )
         payment_plan = create_test_payment_plan(
             product=product,
+            periodicity = 12,
             calculation="0a1b6d54-eef4-4ee6-ac47-2a99cfa5e9a8",
-            custom_props={'date_valid_from': '2019-01-01', 'date_valid_to': '2050-01-01'}
+            custom_props={
+                'date_valid_from': '2019-01-01', 
+                'date_valid_to': '2050-01-01',
+                'json_ext': {
+                    'hf_level_1':'H',
+                    'hf_level_2':'D',
+                    'hf_level_3':'C',
+                    'distr_1':100,
+                    'distr_2':100,
+                    'distr_3':100,
+                    'distr_4':100,
+                    'distr_5':100,
+                    'distr_6':100,
+                    'distr_7':100,
+                    'distr_8':100,
+                    'distr_9':100,
+                    'distr_10':100,
+                    'distr_11':100,
+                    'distr_12':100
+                }
+            }
         )
         create_test_rel_distr_range(
             product.id,
