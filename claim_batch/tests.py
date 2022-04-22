@@ -126,7 +126,7 @@ class BatchRunTest(TestCase):
             claim1, "A", custom_props={"item_id": item.id, "qty_provided": 3}
         )
         errors = validate_and_process_dedrem_claim(claim1, self.user, True)
-
+        _, days_in_month = calendar.monthrange(claim1.validity_from.year, claim1.validity_from.month)
         # add process stamp for claim to not use the process_stamp with now()
         claim1.process_stamp = datetime.datetime(claim1.validity_from.year, claim1.validity_from.month, days_in_month - 1)
         claim1.save()
@@ -145,7 +145,7 @@ class BatchRunTest(TestCase):
         self.assertEquals(dedrem.rem_g, 500)  # 100*2 + 100*3
 
         # When
-        _, days_in_month = calendar.monthrange(claim1.validity_from.year, claim1.validity_from.month)
+        
         end_date = datetime.datetime(claim1.validity_from.year, claim1.validity_from.month, days_in_month)
 
         do_process_batch(
