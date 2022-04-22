@@ -71,7 +71,6 @@ class BatchRunTest(TestCase):
             custom_props={
                 "name": "simplebatch",
                 "lump_sum": 10_000,
-                "period_rel_prices": Product.RELATIVE_PRICE_PERIOD_MONTH,
             },
         )
         payment_plan = create_test_payment_plan(
@@ -100,12 +99,7 @@ class BatchRunTest(TestCase):
                 }
             }
         )
-        create_test_rel_distr_range(
-            product.id,
-            RelativeDistribution.TYPE_MONTH,
-            RelativeDistribution.CARE_TYPE_BOTH,
-            10,
-        )
+
         product_service = create_test_product_service(
             product,
             service,
@@ -134,8 +128,10 @@ class BatchRunTest(TestCase):
         errors = validate_and_process_dedrem_claim(claim1, self.user, True)
 
         # add process stamp for claim to not use the process_stamp with now()
-        claim1.process_stamp = "2019-06-15"
+        claim1.process_stamp = datetime.datetime(claim1.validity_from.year, claim1.validity_from.month, days_in_month - 1)
         claim1.save()
+        
+        
 
         self.assertEqual(len(errors), 0)
         self.assertEqual(
