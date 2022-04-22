@@ -361,11 +361,14 @@ def get_contribution_queryset(product, start_date, end_date):
         .select_related('policy')
 
 def get_product_queryset(end_date, location_id):
-    return Product.objects\
+    queryset = Product.objects\
         .filter(validity_to__isnull = True)\
         .filter(date_from__lte=end_date)\
-        .filter(Q(date_to__gte=end_date) | Q(date_to__isnull=True))\
-        .filter(location_id=location_id)
+        .filter(Q(date_to__gte=end_date) | Q(date_to__isnull=True))
+    if location_id is None:
+        return queryset.filter(location_id=location_id)
+    else:
+        return queryset.filter(location_id__isnull=True)
 
 # Calculate allcated contributions
 def get_allocated_premium(premiums, start_date, end_date):
