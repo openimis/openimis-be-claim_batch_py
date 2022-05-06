@@ -75,7 +75,7 @@ class BatchRunTest(TestCase):
         )
         payment_plan = create_test_payment_plan(
             product=product,
-            periodicity = 12,
+            periodicity = 1,
             calculation="0a1b6d54-eef4-4ee6-ac47-2a99cfa5e9a8",
             custom_props={
                 'date_valid_from': '2019-01-01', 
