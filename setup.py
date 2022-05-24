@@ -24,6 +24,7 @@ setup(
         'djangorestframework',
         'openimis-be-location',
         'openimis-be-product',
+        'django-sql-utils',
     ],
     classifiers=[
         'Environment :: Web Environment',

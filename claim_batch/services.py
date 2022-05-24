@@ -10,7 +10,7 @@ from datetime import date
 from claim.models import ClaimItem, Claim, ClaimService, ClaimDetail
 from claim_batch.models import BatchRun, RelativeIndex, RelativeDistribution
 from django.db import connection, transaction
-from django.db.models import Value, F, Sum, Q, Prefetch, Count
+from django.db.models import Value, F, Sum, Q, Prefetch, Count , Subquery, OuterRef, FloatField
 from django.db.models.functions import Coalesce, ExtractMonth, ExtractYear
 from django.utils.translation import gettext as _
 from location.models import HealthFacility, Location
@@ -18,7 +18,7 @@ from product.models import Product, ProductItemOrService
 from core.signals import *
 from contribution.models import Premium
 from contribution_plan.models import PaymentPlan
-from calculation.services import run_calculation_rules
+from calculation.services import run_calculation_rules, get_calculation_object
 
 logger = logging.getLogger(__name__)
 
@@ -123,65 +123,6 @@ class ProcessBatchService(object):
             .filter(validity_to__isnull=True)\
             .exists()
 
-def create_relative_index(prod_id, prod_value, year, relative_type, location_id, audit_user_id, rel_price_type,
-                          period=None, month_start=None, month_end=None):
-    logger.debug("Creating relative index for product %s with value %s on year %s, type %s, location %s, "
-                 "rel_price_type %s, period %s, month range %s-%s", prod_id, prod_value, year, relative_type,
-                 location_id, rel_price_type, period, month_start, month_end)
-    distr = RelativeDistribution.objects \
-        .filter(product_id=prod_id) \
-        .filter(period=period) \
-        .filter(type=relative_type) \
-        .filter(care_type=rel_price_type) \
-        .filter(validity_to__isnull=False) \
-        .first()
-    distr_perc = distr.percent if distr and distr.percent else 1
-
-    claim_value = 0
-    for claim_detail in [ClaimService, ClaimItem]:
-        qs_val = claim_detail.objects \
-            .filter(status=ClaimDetail.STATUS_PASSED) \
-            .filter(claim__validity_to__isnull=True) \
-            .filter(validity_to__isnull=True) \
-            .filter(claim__status__in=[Claim.STATUS_PROCESSED, Claim.STATUS_VALUATED]) \
-            .annotate(nn_process_stamp_month=Coalesce(ExtractMonth("claim__process_stamp"), Value(-1))) \
-            .annotate(nn_process_stamp_year=Coalesce(ExtractYear("claim__process_stamp"), Value(-1))) \
-            .filter(nn_process_stamp_year=year) \
-            .filter(product_id=prod_id)
-        if period:
-            qs_val = qs_val.filter(nn_process_stamp_month=period)
-        elif month_start and month_end:
-            qs_val = qs_val.filter(nn_process_stamp_month__gte=month_start).filter(
-                nn_process_stamp_month__lte=month_end)
-        # else not needed as the year simply relies on the above year filter
-
-        if rel_price_type == RelativeIndex.CARE_TYPE_IN_PATIENT:
-            qs_val = qs_val.filter(claim__health_facility__level=HealthFacility.LEVEL_HOSPITAL)
-        elif rel_price_type == RelativeIndex.CARE_TYPE_OUT_PATIENT:
-            qs_val = qs_val.exclude(claim__health_facility__level=HealthFacility.LEVEL_HOSPITAL)
-        # else both, no filter needed
-
-        price_valuated = qs_val.values("price_valuated").aggregate(sum=Sum(Coalesce("price_valuated", 0)))["sum"]
-        claim_value += price_valuated if price_valuated else 0
-
-    if claim_value == 0:
-        rel_index = 1
-    else:
-        rel_index = (prod_value * distr_perc) / claim_value
-
-    from core.utils import TimeUtils
-    return RelativeIndex.objects.create(
-        product_id=prod_id,
-        type=relative_type,
-        care_type=rel_price_type,
-        year=year,
-        period=period,
-        calc_date=TimeUtils.now(),
-        rel_index=rel_index,
-        audit_user_id=audit_user_id,
-        location_id=location_id,
-    )
-
 
 @transaction.atomic
 def process_batch(audit_user_id, location_id, period, year):
@@ -266,7 +207,7 @@ def do_process_batch(audit_user_id, location_id, end_date):
             work_data["product"] = product
             work_data["end_date"] = end_date
             logger.debug("do_process_batch created work_data for batch run process")
-            allocated_contribution = []
+            allocated_contribution = {}
             # 1.2 get all the payment plan per product
             work_data["payment_plans"] = get_payment_plan_queryset(product, end_date)
             if work_data["payment_plans"]:
@@ -276,11 +217,13 @@ def do_process_batch(audit_user_id, location_id, end_date):
                     if start_date is not None:
                         allocated_contribution, work_data = update_work_data(work_data, product, start_date, end_date, allocated_contribution)
                         # valuate the claims
-                        rcr = run_calculation_rules(payment_plan, "BatchValuate", None,
-                                                    work_data=work_data, audit_user_id=audit_user_id,
-                                                    location_id=location_id, start_date=start_date, end_date=end_date)
-                        if rcr:
-                            logger.debug("valuation processed for: %s", rcr[0][0])
+                        calculation = get_calculation_object(payment_plan.calculation)
+                        if calculation is not None:
+                            rcr = calculation.calculate_if_active_for_object(payment_plan, context = "BatchValuate",
+                                                        work_data=work_data, audit_user_id=audit_user_id,
+                                                        location_id=location_id, start_date=start_date, end_date=end_date)
+                            if rcr:
+                                logger.debug("valuation processed for: %s", rcr[0][0])
 
             # 5 Generate BatchPayment per product (Ideally per pool but the notion doesn't exist yet)
             # 5.1 filter a calculation valid for batchRun with context BatchPayment (got via 0.2)
@@ -291,25 +234,30 @@ def do_process_batch(audit_user_id, location_id, end_date):
                     if start_date is not None:
                         allocated_contribution, work_data = update_work_data(work_data, product, start_date, end_date, allocated_contribution)
                         # 54.2 Execute the converter per product/batch run/claim (not claims)
-                        rcr = run_calculation_rules(payment_plan, "BatchPayment", None,
-                                                    work_data=work_data, audit_user_id=audit_user_id,
-                                                    location_id=location_id, start_date=start_date, end_date=end_date)
-                        if rcr:
-                            logger.debug("conversion processed for: %s", rcr[0][0])
+                        calculation = get_calculation_object(payment_plan.calculation)
+                        if calculation is not None:
+                            rcr = calculation.calculate_if_active_for_object(payment_plan, context ="BatchPayment",
+                                                        work_data=work_data, audit_user_id=audit_user_id,
+                                                        location_id=location_id, start_date=start_date, end_date=end_date)
+                            if rcr:
+                                logger.debug("conversion processed for: %s", rcr[0][0])
 
             # save the batch run into db
             logger.debug("do_process_batch created run: %s", created_run.id)
     else:
         logger.info("no product found in  %s for %s/%s", location_id, period, year)
+    return created_run
 
 
-def update_work_data(work_data, product, start_date, end_date, allocated_contribution = None):
+def update_work_data(work_data, product, start_date, end_date, allocated_contribution=None):
     work_data["start_date"] = start_date
     # 1.3 generate queryset
     work_data["items"] = get_items_queryset(product, start_date, end_date)
     work_data["services"] = get_services_queryset(product, start_date, end_date)
     work_data["contributions"] = get_contribution_queryset(product, start_date, end_date)
     work_data['claims'] =  get_claim_queryset(product, start_date, end_date)
+    if allocated_contribution is None:
+        allocated_contribution = {}
     start_date_str = str(start_date)
     if start_date_str not in allocated_contribution:
         allocated_contribution[start_date_str] = get_allocated_premium(work_data["contributions"], start_date, end_date)
@@ -354,15 +302,15 @@ def get_claim_queryset(product, start_date, end_date):
 
 def get_contribution_queryset(product, start_date, end_date):
     return Premium.objects \
-        .filter(validity_from__lte=end_date) \
-        .filter(validity_from__gte=start_date) \
+        .filter(policy__effective_date__lte=end_date) \
+        .filter(policy__expiry_date__gte=start_date) \
         .filter(validity_to__isnull=True)\
         .filter(policy__product=product)\
         .select_related('policy')
 
 def get_product_queryset(end_date, location_id):
     queryset = Product.objects\
-        .filter(validity_to__isnull = True)\
+        .filter(validity_to__isnull=True)\
         .filter(date_from__lte=end_date)\
         .filter(Q(date_to__gte=end_date) | Q(date_to__isnull=True))
     if location_id is None:
@@ -376,7 +324,9 @@ def get_allocated_premium(premiums, start_date, end_date):
     allocated_premiums = 0
     for premium in premiums:
         allocation_start = max(premium.policy.effective_date, start_date)
-        allocation_stop = min(start_date, premium.policy.expiry_date)
+        if isinstance(allocation_start, datetime.datetime): allocation_start = allocation_start.date()
+        allocation_stop = min(end_date, premium.policy.expiry_date)
+        if isinstance(allocation_stop, datetime.datetime): allocation_stop = allocation_stop.date()
         allocation_diff = (allocation_stop - allocation_start).days + 1
         policy_duration = (premium.policy.expiry_date - premium.policy.effective_date).days + 1
         allocated_premiums += premium.amount * allocation_diff / policy_duration
@@ -424,40 +374,43 @@ def get_start_date(end_date, periodicity):
     # create the possible start dates
     year = end_date.year
     month = end_date.month
-    if periodicity == '12':
+    if periodicity == 12:
         #yearly
         return datetime.date(year, 1, 1) if month == 12 else None
-    elif periodicity == '6':
+    elif periodicity == 6:
         #semester
         return datetime.date(year, month - 5, 1) if month % 6 == 0 else None
-    elif periodicity == '4':
+    elif periodicity == 4:
         # quarter
         return datetime.date(year, month - 4, 1) if month % 4 == 0 else None
-    elif periodicity == '3':
+    elif periodicity == 3:
         # quarter
         return datetime.date(year, month - 2, 1) if month % 3 == 0 else None
-    elif periodicity == '2':
+    elif periodicity == 2:
         # quarter
         return datetime.date(year, month - 1, 1) if month % 2 == 0 else None
-    elif periodicity == '1':
+    elif periodicity == 1:
         #monthy
         return datetime.date(year, month, 1)
     else:
         return None
 
 
-
-def _get_relative_index(product_id, relative_period, relative_year, relative_care_type='B', relative_type=12):
-    qs = RelativeIndex.objects \
-        .filter(product_id=product_id) \
-        .filter(care_type=relative_care_type) \
-        .filter(type=relative_type) \
-        .filter(year=relative_year) \
-        .filter(validity_to__isnull=True)
-    if relative_period:
-        qs = qs.filter(period=relative_period)
-    rel_index = qs.values_list("rel_index", flat=True).first()
-    return rel_index if rel_index else -1
+def update_claim_valuated(claims, batch_run):
+    # 4 update the claim Total amounts if all Item and services got "valuated"
+    service_subquery = Subquery(
+        ClaimItem.objects.filter(claim=OuterRef('pk')).filter(legacy_id__isnull=True).values('claim_id').annotate(item_sum = Sum('price_valuated')).values('item_sum').order_by()[:1],
+        output_field=FloatField()
+    )
+    item_subquery = Subquery(
+        ClaimService.objects.filter(claim=OuterRef('pk')).filter(legacy_id__isnull=True).values('claim_id').annotate(service_sum = Sum('price_valuated')).values('service_sum').order_by()[:1]  ,
+        output_field=FloatField()
+    )
+    claims.update(
+        status=Claim.STATUS_VALUATED,
+        batch_run=batch_run,
+        remunerated=Coalesce(service_subquery,0) + Coalesce(item_subquery,0)
+    )
 
 
 def process_batch_report_data_with_claims(prms):
