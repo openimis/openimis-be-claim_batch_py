@@ -75,34 +75,34 @@ class BatchRunTest(TestCase):
         )
         payment_plan = create_test_payment_plan(
             product=product,
-            periodicity = 1,
             calculation="0a1b6d54-eef4-4ee6-ac47-2a99cfa5e9a8",
             custom_props={
+                'periodicity': 1,
                 'date_valid_from': '2019-01-01', 
                 'date_valid_to': '2050-01-01',
                 'json_ext': {
-                    'calculation_rule':{
-                        'hf_level_1':'H',
+                    'calculation_rule': {
+                        'hf_level_1': 'H',
                         'hf_sublevel_1': "null",
-                        'hf_level_2':'D',
+                        'hf_level_2': 'D',
                         'hf_sublevel_2': "null",
-                        'hf_level_3':'C',
+                        'hf_level_3': 'C',
                         'hf_sublevel_3': "null",
                         'hf_level_4': "null",
                         'hf_sublevel_4': "null",
-                        'distr_1':100,
-                        'distr_2':100,
-                        'distr_3':100,
-                        'distr_4':100,
-                        'distr_5':100,
-                        'distr_6':100,
-                        'distr_7':100,
-                        'distr_8':100,
-                        'distr_9':100,
-                        'distr_10':100,
-                        'distr_11':100,
-                        'distr_12':100,
-                        'claim_type':'B'
+                        'distr_1': 100,
+                        'distr_2': 100,
+                        'distr_3': 100,
+                        'distr_4': 100,
+                        'distr_5': 100,
+                        'distr_6': 100,
+                        'distr_7': 100,
+                        'distr_8': 100,
+                        'distr_9': 100,
+                        'distr_10': 100,
+                        'distr_11': 100,
+                        'distr_12': 100,
+                        'claim_type': 'B'
                     }
                 }
             }

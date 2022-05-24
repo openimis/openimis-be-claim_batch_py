@@ -2,23 +2,23 @@ import calendar
 import datetime
 import uuid
 import logging
-
-
-import core
 import pandas as pd
+import core
+
 from datetime import date
-from claim.models import ClaimItem, Claim, ClaimService, ClaimDetail
-from claim_batch.models import BatchRun, RelativeIndex, RelativeDistribution
 from django.db import connection, transaction
 from django.db.models import Value, F, Sum, Q, Prefetch, Count , Subquery, OuterRef, FloatField
 from django.db.models.functions import Coalesce, ExtractMonth, ExtractYear
 from django.utils.translation import gettext as _
-from location.models import HealthFacility, Location
-from product.models import Product, ProductItemOrService
-from core.signals import *
+
+from calculation.services import run_calculation_rules, get_calculation_object
+from claim.models import ClaimItem, Claim, ClaimService, ClaimDetail
+from claim_batch.models import BatchRun, RelativeIndex, RelativeDistribution
 from contribution.models import Premium
 from contribution_plan.models import PaymentPlan
-from calculation.services import run_calculation_rules, get_calculation_object
+from core.signals import *
+from location.models import HealthFacility, Location
+from product.models import Product, ProductItemOrService
 
 logger = logging.getLogger(__name__)
 
@@ -219,9 +219,11 @@ def do_process_batch(audit_user_id, location_id, end_date):
                         # valuate the claims
                         calculation = get_calculation_object(payment_plan.calculation)
                         if calculation is not None:
-                            rcr = calculation.calculate_if_active_for_object(payment_plan, context = "BatchValuate",
-                                                        work_data=work_data, audit_user_id=audit_user_id,
-                                                        location_id=location_id, start_date=start_date, end_date=end_date)
+                            rcr = calculation.calculate_if_active_for_object(
+                                payment_plan, context="BatchValuate",
+                                work_data=work_data, audit_user_id=audit_user_id,
+                                location_id=location_id, start_date=start_date, end_date=end_date
+                            )
                             if rcr:
                                 logger.debug("valuation processed for: %s", rcr[0][0])
 
@@ -236,9 +238,11 @@ def do_process_batch(audit_user_id, location_id, end_date):
                         # 54.2 Execute the converter per product/batch run/claim (not claims)
                         calculation = get_calculation_object(payment_plan.calculation)
                         if calculation is not None:
-                            rcr = calculation.calculate_if_active_for_object(payment_plan, context ="BatchPayment",
-                                                        work_data=work_data, audit_user_id=audit_user_id,
-                                                        location_id=location_id, start_date=start_date, end_date=end_date)
+                            rcr = calculation.calculate_if_active_for_object(
+                                payment_plan, context="BatchPayment",
+                                work_data=work_data, audit_user_id=audit_user_id,
+                                location_id=location_id, start_date=start_date, end_date=end_date
+                            )
                             if rcr:
                                 logger.debug("conversion processed for: %s", rcr[0][0])
 
@@ -273,7 +277,6 @@ def get_payment_plan_queryset(product, end_date):
         .filter(is_deleted=False)
 
 
-
 def get_items_queryset(product, start_date, end_date):
     return ClaimItem.objects\
         .filter(validity_to__isnull=True)\
@@ -282,6 +285,7 @@ def get_items_queryset(product, start_date, end_date):
         .filter(product=product)\
         .select_related('claim__health_facility')\
         .order_by('claim__health_facility').order_by('claim')
+
 
 def get_services_queryset(product, start_date, end_date):
     return ClaimService.objects\
@@ -292,13 +296,15 @@ def get_services_queryset(product, start_date, end_date):
         .select_related('claim__health_facility')\
         .order_by('claim__health_facility').order_by('claim')
 
+
 def get_claim_queryset(product, start_date, end_date):
-    return  Claim.objects\
+    return Claim.objects\
         .filter(validity_from__lte=end_date)\
         .filter(validity_from__gte=start_date)\
         .filter(validity_to__isnull=True)\
         .filter(process_stamp__lte=end_date)\
         .filter((Q(items__product=product) | Q(services__product=product)))
+
 
 def get_contribution_queryset(product, start_date, end_date):
     return Premium.objects \
@@ -307,6 +313,7 @@ def get_contribution_queryset(product, start_date, end_date):
         .filter(validity_to__isnull=True)\
         .filter(policy__product=product)\
         .select_related('policy')
+
 
 def get_product_queryset(end_date, location_id):
     queryset = Product.objects\
@@ -318,8 +325,9 @@ def get_product_queryset(end_date, location_id):
     else:
         return queryset.filter(location_id__isnull=True)
 
-# Calculate allcated contributions
+
 def get_allocated_premium(premiums, start_date, end_date):
+    # Calculate allcated contributions
     # go trough the contribution and find the allocated contribution
     allocated_premiums = 0
     for premium in premiums:
@@ -333,18 +341,16 @@ def get_allocated_premium(premiums, start_date, end_date):
     return allocated_premiums
 
 
-
-# return the filter base on cieling interpretation and mode (I inpatient, O outpatient), 
-# prefix is required if the queryset is not about claims
-def get_hospital_claim_filter(ceiling_interpretation, mode = 'I', prefix = ''):
-    
+def get_hospital_claim_filter(ceiling_interpretation, mode='I', prefix=''):
+    # return the filter base on cieling interpretation and mode (I inpatient, O outpatient),
+    # prefix is required if the queryset is not about claims
     if ceiling_interpretation == Product.CEILING_INTERPRETATION_HOSPITAL:
         Qterm = (Q(('%shealth_facility_level' % prefix,HealthFacility.LEVEL_HOSPITAL)))
     else:
         Qterm = (Q('%sdate_to__isnull' % prefix,False) & Q('%sdate_to__gt' % prefix,F('date_from')))
     if mode == 'I':
         return Qterm
-    elif  mode == 'O':
+    elif mode == 'O':
         return ~Qterm
     else:
         return Q()
@@ -375,10 +381,10 @@ def get_start_date(end_date, periodicity):
     year = end_date.year
     month = end_date.month
     if periodicity == 12:
-        #yearly
+        # yearly
         return datetime.date(year, 1, 1) if month == 12 else None
     elif periodicity == 6:
-        #semester
+        # semester
         return datetime.date(year, month - 5, 1) if month % 6 == 0 else None
     elif periodicity == 4:
         # quarter
@@ -390,7 +396,7 @@ def get_start_date(end_date, periodicity):
         # quarter
         return datetime.date(year, month - 1, 1) if month % 2 == 0 else None
     elif periodicity == 1:
-        #monthy
+        # monthy
         return datetime.date(year, month, 1)
     else:
         return None
