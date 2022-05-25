@@ -332,9 +332,11 @@ def get_allocated_premium(premiums, start_date, end_date):
     allocated_premiums = 0
     for premium in premiums:
         allocation_start = max(premium.policy.effective_date, start_date)
-        if isinstance(allocation_start, datetime.datetime): allocation_start = allocation_start.date()
+        if isinstance(allocation_start, datetime.datetime):
+            allocation_start = allocation_start.date()
         allocation_stop = min(end_date, premium.policy.expiry_date)
-        if isinstance(allocation_stop, datetime.datetime): allocation_stop = allocation_stop.date()
+        if isinstance(allocation_stop, datetime.datetime):
+            allocation_stop = allocation_stop.date()
         allocation_diff = (allocation_stop - allocation_start).days + 1
         policy_duration = (premium.policy.expiry_date - premium.policy.effective_date).days + 1
         allocated_premiums += premium.amount * allocation_diff / policy_duration
@@ -356,7 +358,7 @@ def get_hospital_claim_filter(ceiling_interpretation, mode='I', prefix=''):
         return Q()
 
 
-def get_period( start_date, end_date):
+def get_period(start_date, end_date):
     # TODO do function that returns such values M/Q/Y , 1-12/1-4/1
     period_type = None
     period_id = None
