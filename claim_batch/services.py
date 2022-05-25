@@ -402,20 +402,22 @@ def get_start_date(end_date, periodicity):
         return None
 
 
-def update_claim_valuated(claims, batch_run):
+def update_claim_valuated(claims, batch_run, claim_based_value_subquery=0):
     # 4 update the claim Total amounts if all Item and services got "valuated"
     service_subquery = Subquery(
-        ClaimItem.objects.filter(claim=OuterRef('pk')).filter(legacy_id__isnull=True).values('claim_id').annotate(item_sum = Sum('price_valuated')).values('item_sum').order_by()[:1],
+        ClaimItem.objects.filter(claim=OuterRef('pk')).filter(legacy_id__isnull=True).values('claim_id').annotate(
+            item_sum=Sum('price_valuated')).values('item_sum').order_by()[:1],
         output_field=FloatField()
     )
     item_subquery = Subquery(
-        ClaimService.objects.filter(claim=OuterRef('pk')).filter(legacy_id__isnull=True).values('claim_id').annotate(service_sum = Sum('price_valuated')).values('service_sum').order_by()[:1]  ,
+        ClaimService.objects.filter(claim=OuterRef('pk')).filter(legacy_id__isnull=True).values('claim_id').annotate(
+            service_sum=Sum('price_valuated')).values('service_sum').order_by()[:1],
         output_field=FloatField()
     )
     claims.update(
         status=Claim.STATUS_VALUATED,
         batch_run=batch_run,
-        remunerated=Coalesce(service_subquery,0) + Coalesce(item_subquery,0)
+        remunerated=Coalesce(service_subquery, 0) + Coalesce(item_subquery, 0) + Coalesce(claim_based_value_subquery, 0)
     )
 
 
