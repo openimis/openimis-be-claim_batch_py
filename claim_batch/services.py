@@ -200,51 +200,22 @@ def do_process_batch(audit_user_id, location_id, end_date):
     # 1 per product (Ideally per pool but the notion doesn't exist yet)
     if products:
         for product in products:
-
             logger.debug("do_process_batch creating work_data for batch run process")
-            work_data = {}
-            work_data["created_run"] = created_run
-            work_data["product"] = product
-            work_data["end_date"] = end_date
+            work_data = {"created_run": created_run, "product": product, "end_date": end_date}
             logger.debug("do_process_batch created work_data for batch run process")
             allocated_contribution = {}
             # 1.2 get all the payment plan per product
             work_data["payment_plans"] = get_payment_plan_queryset(product, end_date)
-            if work_data["payment_plans"]:
-                for payment_plan in work_data["payment_plans"]:
-                    start_date = get_start_date(end_date, payment_plan.periodicity)
-                    # run only when it makes sense based on periodicitiy
-                    if start_date is not None:
-                        allocated_contribution, work_data = update_work_data(work_data, product, start_date, end_date, allocated_contribution)
-                        # valuate the claims
-                        calculation = get_calculation_object(payment_plan.calculation)
-                        if calculation is not None:
-                            rcr = calculation.calculate_if_active_for_object(
-                                payment_plan, context="BatchValuate",
-                                work_data=work_data, audit_user_id=audit_user_id,
-                                location_id=location_id, start_date=start_date, end_date=end_date
-                            )
-                            if rcr:
-                                logger.debug("valuation processed for: %s", rcr[0][0])
-
+            # valuate the claims
             # 5 Generate BatchPayment per product (Ideally per pool but the notion doesn't exist yet)
+            trigger_calculation_based_on_context(
+                "BatchValuate", work_data, end_date, product, location_id, allocated_contribution, audit_user_id
+            )
             # 5.1 filter a calculation valid for batchRun with context BatchPayment (got via 0.2)
-            if work_data["payment_plans"]:
-                for payment_plan in work_data["payment_plans"]:
-                    start_date = get_start_date(end_date, payment_plan.periodicity)
-                    # run only when it makes sense based on periodicitiy
-                    if start_date is not None:
-                        allocated_contribution, work_data = update_work_data(work_data, product, start_date, end_date, allocated_contribution)
-                        # 54.2 Execute the converter per product/batch run/claim (not claims)
-                        calculation = get_calculation_object(payment_plan.calculation)
-                        if calculation is not None:
-                            rcr = calculation.calculate_if_active_for_object(
-                                payment_plan, context="BatchPayment",
-                                work_data=work_data, audit_user_id=audit_user_id,
-                                location_id=location_id, start_date=start_date, end_date=end_date
-                            )
-                            if rcr:
-                                logger.debug("conversion processed for: %s", rcr[0][0])
+            # 54.2 Execute the converter per product/batch run/claim (not claims)
+            trigger_calculation_based_on_context(
+                "BatchPayment", work_data, end_date, product, location_id, allocated_contribution, audit_user_id
+            )
 
             # save the batch run into db
             logger.debug("do_process_batch created run: %s", created_run.id)
@@ -253,13 +224,37 @@ def do_process_batch(audit_user_id, location_id, end_date):
     return created_run
 
 
+def trigger_calculation_based_on_context(
+    context, work_data, end_date, product,
+    location_id, allocated_contribution, user_id
+):
+    if work_data["payment_plans"]:
+        for payment_plan in work_data["payment_plans"]:
+            start_date = get_start_date(end_date, payment_plan.periodicity)
+            # run only when it makes sense based on periodicitiy
+            if start_date is not None:
+                allocated_contribution, work_data = update_work_data(
+                    work_data, product, start_date, end_date, allocated_contribution
+                )
+                # 54.2 Execute the converter per product/batch run/claim (not claims)
+                calculation = get_calculation_object(payment_plan.calculation)
+                if calculation is not None:
+                    rcr = calculation.calculate_if_active_for_object(
+                        payment_plan, context=context,
+                        work_data=work_data, audit_user_id=user_id,
+                        location_id=location_id, start_date=start_date, end_date=end_date
+                    )
+                    if rcr:
+                        logger.debug("conversion processed for: %s", rcr[0][0])
+
+
 def update_work_data(work_data, product, start_date, end_date, allocated_contribution=None):
     work_data["start_date"] = start_date
     # 1.3 generate queryset
     work_data["items"] = get_items_queryset(product, start_date, end_date)
     work_data["services"] = get_services_queryset(product, start_date, end_date)
     work_data["contributions"] = get_contribution_queryset(product, start_date, end_date)
-    work_data['claims'] =  get_claim_queryset(product, start_date, end_date)
+    work_data['claims'] = get_claim_queryset(product, start_date, end_date)
     if allocated_contribution is None:
         allocated_contribution = {}
     start_date_str = str(start_date)
@@ -320,7 +315,7 @@ def get_product_queryset(end_date, location_id):
         .filter(validity_to__isnull=True)\
         .filter(date_from__lte=end_date)\
         .filter(Q(date_to__gte=end_date) | Q(date_to__isnull=True))
-    if location_id is None:
+    if location_id is not None:
         return queryset.filter(location_id=location_id)
     else:
         return queryset.filter(location_id__isnull=True)
