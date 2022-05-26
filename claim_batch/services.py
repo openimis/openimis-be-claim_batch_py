@@ -216,7 +216,6 @@ def do_process_batch(audit_user_id, location_id, end_date):
             trigger_calculation_based_on_context(
                 "BatchPayment", work_data, end_date, product, location_id, allocated_contribution, audit_user_id
             )
-
             # save the batch run into db
             logger.debug("do_process_batch created run: %s", created_run.id)
     else:
@@ -236,7 +235,6 @@ def trigger_calculation_based_on_context(
                 allocated_contribution, work_data = update_work_data(
                     work_data, product, start_date, end_date, allocated_contribution
                 )
-                # 54.2 Execute the converter per product/batch run/claim (not claims)
                 calculation = get_calculation_object(payment_plan.calculation)
                 if calculation is not None:
                     rcr = calculation.calculate_if_active_for_object(
@@ -298,7 +296,8 @@ def get_claim_queryset(product, start_date, end_date):
         .filter(validity_from__gte=start_date)\
         .filter(validity_to__isnull=True)\
         .filter(process_stamp__lte=end_date)\
-        .filter((Q(items__product=product) | Q(services__product=product)))
+        .filter((Q(items__product=product) | Q(services__product=product)))\
+        .distinct()
 
 
 def get_contribution_queryset(product, start_date, end_date):
