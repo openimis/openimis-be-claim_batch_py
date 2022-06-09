@@ -25,6 +25,7 @@ setup(
         'openimis-be-location',
         'openimis-be-product',
         'django-sql-utils',
+        'pandas==1.1.4',
     ],
     classifiers=[
         'Environment :: Web Environment',
