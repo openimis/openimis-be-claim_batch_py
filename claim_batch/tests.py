@@ -45,6 +45,7 @@ _TEST_DATA_USER = {
 
 class BatchRunTest(TestCase):
     def setUp(self) -> None:
+        super(BatchRunTest, self).setUp()
         i_user, i_user_created = create_or_update_interactive_user(
             user_id=None, data=_TEST_DATA_USER, audit_user_id=999, connected=False)
         user, user_created = create_or_update_core_user(
