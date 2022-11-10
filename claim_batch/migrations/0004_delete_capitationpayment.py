@@ -9,8 +9,4 @@ class Migration(migrations.Migration):
         ('claim_batch', '0003_capitationpayment_for_legacy_batch_runs'),
     ]
 
-    operations = [
-        migrations.DeleteModel(
-            name='CapitationPayment',
-        ),
-    ]
+    operations = []
