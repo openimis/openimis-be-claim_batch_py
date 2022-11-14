@@ -12,7 +12,7 @@ from .models import BatchRun, RelativeIndex
 from .services import ProcessBatchSubmit, ProcessBatchService
 from .apps import ClaimBatchConfig
 from django.utils.translation import gettext as _
-
+from django.conf import settings
 
 class BatchRunGQLType(DjangoObjectType):
     class Meta:
@@ -42,21 +42,21 @@ class BatchRunSummaryGQLType(ObjectType):
 def batchRunSummaryFilter(**kwargs):
     filter = ''
     if kwargs.get('accountType'):
-        filter += 'r.RelType = %s AND ' % kwargs.get('accountType')
+        filter += 'r."RelType" = %s AND ' % kwargs.get('accountType')
     if kwargs.get('accountYear'):
-        filter += 'b.runYear = %s AND ' % kwargs.get('accountYear')
+        filter += 'b."runYear" = %s AND ' % kwargs.get('accountYear')
     if kwargs.get('accountMonth'):
-        filter += 'b.runMonth = %s AND ' % kwargs.get('accountMonth')
+        filter += 'b."runMonth" = %s AND ' % kwargs.get('accountMonth')
     if kwargs.get('accountDistrict'):
-        filter += 'l.LocationId = %s AND ' % kwargs.get('accountDistrict')
+        filter += 'l."LocationId" = %s AND ' % kwargs.get('accountDistrict')
     elif kwargs.get('accountRegion'):
-        filter += 'l.LocationId = %s AND ' % kwargs.get('accountRegion')
+        filter += 'l."LocationId" = %s AND ' % kwargs.get('accountRegion')
     else:
-        filter += 'l.LocationId is NULL AND '
+        filter += 'l."LocationId" is NULL AND '
     if kwargs.get('accountProduct'):
-        filter += 'r.ProdId = %s AND ' % kwargs.get('accountProduct')
+        filter += 'r."ProdID" = %s AND ' % kwargs.get('accountProduct')
     if kwargs.get('accountCareType'):
-        filter += "r.RelCareType = '%s' AND " % kwargs.get('accountCareType')
+        filter += "r.\"RelCareType\" = '%s' AND " % kwargs.get('accountCareType')
     return filter + '1 = 1'
 
 
@@ -132,31 +132,58 @@ class Query(graphene.ObjectType):
     def resolve_batch_runs_summaries(self, info, **kwargs):
         if not info.context.user.has_perms(ClaimBatchConfig.gql_query_batch_runs_perms):
             raise PermissionDenied(_("unauthorized"))
-        sql = '''
-        SELECT
-            HashBytes('MD5', CONCAT(
-                b.RunID, '_',p.ProdId, '_', r.RelIndexID
-            )),
-            b.RunYear,
-            b.RunMonth,
-            p.ProductCode,
-            p.ProductName,
-            r.RelCareType,
-            convert(varchar, r.CalcDate, 23),
-            r.RelIndex
-        FROM
-            tblRelIndex r,
-            tblLocations l,
-            tblBatchRun b,
-            tblProduct p
-        WHERE
-            r.LocationId = l.LocationId AND
-            l.LocationId = b.LocationId AND
-            r.ProdId = p.ProdId AND %s
-        ORDER BY
-            b.RunYear,
-            b.RunMonth;
-        ''' % batchRunSummaryFilter(**kwargs)
+        if settings.MSSQL:
+            sql = '''
+            SELECT
+                HashBytes('MD5', CONCAT(
+                    b.RunID, '_',p.ProdID, '_', r.RelIndexID
+                )),
+                b.RunYear,
+                b.RunMonth,
+                p.ProductCode,
+                p.ProductName,
+                r.RelCareType,
+                convert(varchar, r.CalcDate, 23),
+                r.RelIndex
+            FROM
+                tblRelIndex r,
+                tblLocations l,
+                tblBatchRun b,
+                tblProduct p
+            WHERE
+                r.LocationId = l.LocationId AND
+                l.LocationId = b.LocationId AND
+                r.ProdID = p.ProdID AND %s
+            ORDER BY
+                b.RunYear,
+                b.RunMonth;
+            ''' % batchRunSummaryFilter(**kwargs)
+        else:
+            sql = '''
+                SELECT
+                    MD5(CONCAT(
+                        b."RunID", '_',p."ProdID", '_', r."RelIndexID"
+                    )),
+                    b."RunYear",
+                    b."RunMonth",
+                    p."ProductCode",
+                    p."ProductName",
+                    r."RelCareType",
+                    CAST (r."CalcDate" as varchar(23)),
+                    r."RelIndex"
+                FROM
+                    "tblRelIndex" r,
+                    "tblLocations" l,
+                    "tblBatchRun" b,
+                    "tblProduct" p
+                WHERE
+                    r."LocationId" = l."LocationId" AND
+                    l."LocationId" = b."LocationId" AND
+                    r."ProdID" = p."ProdID" AND %s
+                ORDER BY
+                    b."RunYear",
+                    b."RunMonth";
+            ''' % batchRunSummaryFilter(**kwargs)
         with connection.cursor() as cursor:
             cursor.execute(sql)
             res = [BatchRunSummaryGQLType(
