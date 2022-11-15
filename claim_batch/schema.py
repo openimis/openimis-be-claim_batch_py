@@ -44,9 +44,9 @@ def batchRunSummaryFilter(**kwargs):
     if kwargs.get('accountType'):
         filter += 'r."RelType" = %s AND ' % kwargs.get('accountType')
     if kwargs.get('accountYear'):
-        filter += 'b."runYear" = %s AND ' % kwargs.get('accountYear')
+        filter += 'b."RunYear" = %s AND ' % kwargs.get('accountYear')
     if kwargs.get('accountMonth'):
-        filter += 'b."runMonth" = %s AND ' % kwargs.get('accountMonth')
+        filter += 'b."RunMonth" = %s AND ' % kwargs.get('accountMonth')
     if kwargs.get('accountDistrict'):
         filter += 'l."LocationId" = %s AND ' % kwargs.get('accountDistrict')
     elif kwargs.get('accountRegion'):
