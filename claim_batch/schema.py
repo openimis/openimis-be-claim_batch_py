@@ -40,24 +40,32 @@ class BatchRunSummaryGQLType(ObjectType):
 
 
 def batchRunSummaryFilter(**kwargs):
+    params = []
     filter = ''
     if kwargs.get('accountType'):
-        filter += 'r."RelType" = %s AND ' % kwargs.get('accountType')
+        filter += 'r."RelType" = %s AND '
+        params.append(kwargs.get('accountType'))
     if kwargs.get('accountYear'):
-        filter += 'b."RunYear" = %s AND ' % kwargs.get('accountYear')
+        filter += 'b."RunYear" = %s AND '
+        params.append(kwargs.get('accountYear'))
     if kwargs.get('accountMonth'):
-        filter += 'b."RunMonth" = %s AND ' % kwargs.get('accountMonth')
+        filter += 'b."RunMonth" = %s AND '
+        params.append(kwargs.get('accountMonth'))
     if kwargs.get('accountDistrict'):
-        filter += 'l."LocationId" = %s AND ' % kwargs.get('accountDistrict')
+        filter += 'l."LocationId" = %s AND '
+        params.append(kwargs.get('accountDistrict'))
     elif kwargs.get('accountRegion'):
-        filter += 'l."LocationId" = %s AND ' % kwargs.get('accountRegion')
+        filter += 'l."LocationId" = %s AND '
+        params.append(kwargs.get('accountRegion'))
     else:
         filter += 'l."LocationId" is NULL AND '
     if kwargs.get('accountProduct'):
-        filter += 'r."ProdID" = %s AND ' % kwargs.get('accountProduct')
+        filter += 'r."ProdID" = %s AND '
+        params.append(kwargs.get('accountProduct'))
     if kwargs.get('accountCareType'):
-        filter += "r.\"RelCareType\" = '%s' AND " % kwargs.get('accountCareType')
-    return filter + '1 = 1'
+        filter += "r.\"RelCareType\" = %s AND "
+        params.append(kwargs.get('accountCareType'))
+    return filter + '1 = 1', params
 
 
 class BatchRunSummaryConnection(graphene.Connection):
@@ -132,6 +140,7 @@ class Query(graphene.ObjectType):
     def resolve_batch_runs_summaries(self, info, **kwargs):
         if not info.context.user.has_perms(ClaimBatchConfig.gql_query_batch_runs_perms):
             raise PermissionDenied(_("unauthorized"))
+        sql_params, params = batchRunSummaryFilter(**kwargs)
         if settings.MSSQL:
             sql = '''
             SELECT
@@ -157,7 +166,7 @@ class Query(graphene.ObjectType):
             ORDER BY
                 b.RunYear,
                 b.RunMonth;
-            ''' % batchRunSummaryFilter(**kwargs)
+            ''' % sql_params
         else:
             sql = '''
                 SELECT
@@ -183,9 +192,9 @@ class Query(graphene.ObjectType):
                 ORDER BY
                     b."RunYear",
                     b."RunMonth";
-            ''' % batchRunSummaryFilter(**kwargs)
+            ''' % sql_params
         with connection.cursor() as cursor:
-            cursor.execute(sql)
+            cursor.execute(sql, params)
             res = [BatchRunSummaryGQLType(
                 id=r[0],
                 run_year=r[1],
