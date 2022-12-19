@@ -3,11 +3,13 @@ import datetime
 import uuid
 import logging
 import pandas as pd
+from django.contrib.admin.options import get_content_type_for_model
+
 import core
 
 from datetime import date
 from django.db import connection, transaction
-from django.db.models import Value, F, Sum, Q, Prefetch, Count , Subquery, OuterRef, FloatField
+from django.db.models import Value, F, Sum, Q, Prefetch, Count, Subquery, OuterRef, FloatField
 from django.db.models.functions import Coalesce, ExtractMonth, ExtractYear
 from django.utils.translation import gettext as _
 
@@ -17,6 +19,7 @@ from claim_batch.models import BatchRun, RelativeIndex, RelativeDistribution
 from contribution.models import Premium
 from contribution_plan.models import PaymentPlan
 from core.signals import *
+from invoice.models import BillPayment, InvoicePayment, BillItem, InvoiceLineItem
 from location.models import HealthFacility, Location
 from product.models import Product, ProductItemOrService
 
@@ -88,14 +91,14 @@ class ProcessBatchService(object):
         for svc_item in [ClaimItem, ClaimService]:
             capitation_payment_products.extend(
                 svc_item.objects
-                    .filter(claim__status=Claim.STATUS_VALUATED)
-                    .filter(claim__validity_to__isnull=True)
-                    .filter(validity_to__isnull=True)
-                    .filter(status=svc_item.STATUS_PASSED)
-                    .annotate(prod_location=Coalesce("product__location_id", Value(-1)))
-                    .filter(prod_location=submit.location_id if submit.location_id else -1)
-                    .values('product_id')
-                    .distinct()
+                .filter(claim__status=Claim.STATUS_VALUATED)
+                .filter(claim__validity_to__isnull=True)
+                .filter(validity_to__isnull=True)
+                .filter(status=svc_item.STATUS_PASSED)
+                .annotate(prod_location=Coalesce("product__location_id", Value(-1)))
+                .filter(prod_location=submit.location_id if submit.location_id else -1)
+                .values('product_id')
+                .distinct()
             )
 
         region_id, district_id = _get_capitation_region_and_district(submit.location_id)
@@ -120,7 +123,7 @@ class ProcessBatchService(object):
             .filter(run_month=month) \
             .annotate(nn_location_id=Coalesce("location_id", Value(-1))) \
             .filter(nn_location_id=-1 if location_id is None else location_id) \
-            .filter(validity_to__isnull=True)\
+            .filter(validity_to__isnull=True) \
             .exists()
 
 
@@ -144,9 +147,9 @@ def process_batch(audit_user_id, location_id, period, year):
     end_date = datetime.datetime(year, period, days_in_month)
     now = datetime.datetime.now()
     # TODO - double check this condition
-    #if end_date < now:
+    # if end_date < now:
     #    return [str(ProcessBatchSubmitError(3))]
-        ## TODO create message "Batch cannot be run before the end of the selected period"
+    ## TODO create message "Batch cannot be run before the end of the selected period"
     try:
         do_process_batch(audit_user_id, location_id, end_date)
     except (KeyboardInterrupt, SystemExit):
@@ -224,8 +227,8 @@ def do_process_batch(audit_user_id, location_id, end_date):
 
 
 def trigger_calculation_based_on_context(
-    context, work_data, end_date, product,
-    location_id, allocated_contribution, user_id
+        context, work_data, end_date, product,
+        location_id, allocated_contribution, user_id
 ):
     if work_data["payment_plans"]:
         for payment_plan in work_data["payment_plans"]:
@@ -253,71 +256,107 @@ def update_work_data(work_data, product, start_date, end_date, allocated_contrib
     work_data["services"] = get_services_queryset(product, start_date, end_date)
     work_data["contributions"] = get_contribution_queryset(product, start_date, end_date)
     work_data['claims'] = get_claim_queryset(product, start_date, end_date)
+    work_data['bill_payments'] = get_bill_payment_queryset(product, start_date, end_date)
+    work_data['invoice_payments'] = get_invoice_payment_queryset(product, start_date, end_date)
     if allocated_contribution is None:
         allocated_contribution = {}
     start_date_str = str(start_date)
     if start_date_str not in allocated_contribution:
-        allocated_contribution[start_date_str] = get_allocated_premium(work_data["contributions"], start_date, end_date)
+        allocated_contribution[start_date_str] = get_allocated_premium(
+            get_allocated_contribution_queryset(product, start_date, end_date), start_date, end_date)
     work_data['allocated_contributions'] = allocated_contribution[start_date_str]
     return allocated_contribution, work_data
 
 
 def get_payment_plan_queryset(product, end_date):
-    return PaymentPlan.objects\
-        .filter(date_valid_to__gte=end_date)\
-        .filter(date_valid_from__lte=end_date)\
-        .filter(benefit_plan=product)\
+    return PaymentPlan.objects \
+        .filter(date_valid_to__gte=end_date) \
+        .filter(date_valid_from__lte=end_date) \
+        .filter(benefit_plan=product) \
         .filter(is_deleted=False)
 
 
 def get_items_queryset(product, start_date, end_date):
-    return ClaimItem.objects\
-        .filter(validity_to__isnull=True)\
-        .filter(claim__process_stamp__lte=end_date)\
-        .filter(claim__process_stamp__gte=start_date)\
-        .filter(product=product)\
-        .select_related('claim__health_facility')\
+    return ClaimItem.objects \
+        .filter(validity_to__isnull=True) \
+        .filter(claim__process_stamp__lte=end_date) \
+        .filter(claim__process_stamp__gte=start_date) \
+        .filter(product=product) \
+        .select_related('claim__health_facility') \
         .order_by('claim__health_facility').order_by('claim')
 
 
 def get_services_queryset(product, start_date, end_date):
-    return ClaimService.objects\
-        .filter(claim__process_stamp__lte=end_date)\
-        .filter(claim__process_stamp__gte=start_date)\
-        .filter(validity_to__isnull=True)\
-        .filter(product=product)\
-        .select_related('claim__health_facility')\
+    return ClaimService.objects \
+        .filter(claim__process_stamp__lte=end_date) \
+        .filter(claim__process_stamp__gte=start_date) \
+        .filter(validity_to__isnull=True) \
+        .filter(product=product) \
+        .select_related('claim__health_facility') \
         .order_by('claim__health_facility').order_by('claim')
 
 
 def get_claim_queryset(product, start_date, end_date):
-    return Claim.objects\
-        .filter(validity_from__lte=end_date)\
-        .filter(validity_from__gte=start_date)\
-        .filter(validity_to__isnull=True)\
-        .filter(process_stamp__lte=end_date)\
-        .filter((Q(items__product=product) | Q(services__product=product)))\
+    return Claim.objects \
+        .filter(validity_from__lte=end_date) \
+        .filter(validity_from__gte=start_date) \
+        .filter(validity_to__isnull=True) \
+        .filter(process_stamp__lte=end_date) \
+        .filter((Q(items__product=product) | Q(services__product=product))) \
         .distinct()
 
 
-def get_contribution_queryset(product, start_date, end_date):
+def get_allocated_contribution_queryset(product, start_date, end_date):
     return Premium.objects \
         .filter(policy__effective_date__lte=end_date) \
         .filter(policy__expiry_date__gte=start_date) \
-        .filter(validity_to__isnull=True)\
-        .filter(policy__product=product)\
+        .filter(validity_to__isnull=True) \
+        .filter(policy__product=product) \
         .select_related('policy')
 
 
 def get_product_queryset(end_date, location_id):
-    queryset = Product.objects\
-        .filter(validity_to__isnull=True)\
-        .filter(date_from__lte=end_date)\
+    queryset = Product.objects \
+        .filter(validity_to__isnull=True) \
+        .filter(date_from__lte=end_date) \
         .filter(Q(date_to__gte=end_date) | Q(date_to__isnull=True))
     if location_id is not None:
         return queryset.filter(location_id=location_id)
     else:
         return queryset.filter(location_id__isnull=True)
+
+
+def get_contribution_queryset(product, start_date, end_date):
+    return Premium.objects \
+        .filter(validity_to__isnull=True) \
+        .filter(created_date__range=(start_date, end_date)) \
+        .filter(policy__product=product)
+
+
+def get_bill_payment_queryset(product, start_date, end_date):
+    return BillPayment.objects \
+        .filter(is_deleted=False) \
+        .filter(date_created__range=(start_date, end_date)) \
+        .filter(bill__line_items_bill__in=BillItem.objects
+                .filter(is_deleted=False)
+                .filter(line_type=get_content_type_for_model(Premium))
+                .filter(line_id__in=Premium.objects
+                        .filter(validity_to__isnull=True)
+                        .filter(policy__product=product)
+                        .values_list('id', flat=True)))
+
+
+def get_invoice_payment_queryset(product, start_date, end_date):
+    return InvoicePayment.objects \
+        .filter(is_deleted=False) \
+        .filter(date_created__range=(start_date, end_date)) \
+        .filter(invoice__line_items__in=InvoiceLineItem.objects
+                .filter(is_deleted=False)
+                .filter(line_type=get_content_type_for_model(Premium))
+                .filter(line_id__in=Premium.objects
+                        .filter(validity_to__isnull=True)
+                        .filter(policy__product=product)
+                        .values_list('id', flat=True)))
 
 
 def get_allocated_premium(premiums, start_date, end_date):
@@ -341,9 +380,9 @@ def get_hospital_claim_filter(ceiling_interpretation, mode='I', prefix=''):
     # return the filter base on cieling interpretation and mode (I inpatient, O outpatient),
     # prefix is required if the queryset is not about claims
     if ceiling_interpretation == Product.CEILING_INTERPRETATION_HOSPITAL:
-        Qterm = (Q(('%shealth_facility_level' % prefix,HealthFacility.LEVEL_HOSPITAL)))
+        Qterm = (Q(('%shealth_facility_level' % prefix, HealthFacility.LEVEL_HOSPITAL)))
     else:
-        Qterm = (Q('%sdate_to__isnull' % prefix,False) & Q('%sdate_to__gt' % prefix,F('date_from')))
+        Qterm = (Q('%sdate_to__isnull' % prefix, False) & Q('%sdate_to__gt' % prefix, F('date_from')))
     if mode == 'I':
         return Qterm
     elif mode == 'O':
