@@ -1,4 +1,6 @@
 from django.core.exceptions import PermissionDenied
+
+from core.jwt_authentication import JWTAuthentication
 from report.services import ReportService
 from .services import ReportDataService
 from .reports import pbh, pbp, pbc_H, pbc_P
@@ -22,11 +24,12 @@ def _report(prms):
 
 
 def report(request):
-    if not request.user.has_perms(ClaimBatchConfig.account_preview_perms):
+    user = JWTAuthentication().authenticate(request)[0]
+    if not user.has_perms(ClaimBatchConfig.account_preview_perms):
         raise PermissionDenied(_("unauthorized"))
-    report_service = ReportService(request.user)
+    report_service = ReportService(user)
     report, default = _report(request.GET)
-    report_data_service = ReportDataService(request.user)
+    report_data_service = ReportDataService(user)
     data = report_data_service.fetch(request.GET)
     return report_service.process(report,
                                   {'data': data,
