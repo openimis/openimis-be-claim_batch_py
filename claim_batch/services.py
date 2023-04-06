@@ -456,38 +456,110 @@ def update_claim_valuated(claims, batch_run, claim_based_value_subquery=0):
     )
 
 
+# This query works on MSSQL and Postgres
+_process_batch_report_data_with_claims_sql = """
+   WITH "cdetails" AS
+             (SELECT ci."ClaimID",
+                     ci."ProdID",
+                     SUM(coalesce(ci."PriceApproved", ci."PriceAsked",0) *
+                         coalesce(ci."QtyApproved", ci."QtyProvided",0)) "PriceApproved",
+                     SUM(ci."PriceValuated")                         "PriceAdjusted",
+                     SUM(ci."RemuneratedAmount")                     "RemuneratedAmount"
+              FROM "tblClaimItems" ci
+              WHERE ci."ValidityTo" IS NULL
+                AND ci."ClaimItemStatus" = 1
+              GROUP BY ci."ClaimID", ci."ProdID"
+              UNION ALL
+
+              SELECT cs."ClaimID",
+                     cs."ProdID",
+                     SUM(coalesce(cs."PriceApproved", cs."PriceAsked",0) *
+                         coalesce(cs."QtyApproved", cs."QtyProvided",0)) "PriceApproved",
+                     SUM(cs."PriceValuated")                       "PriceValuated",
+                     SUM(cs."RemuneratedAmount")                   "RemuneratedAmount"
+
+              FROM "tblClaimServices" cs
+              WHERE cs."ValidityTo" IS NULL
+                AND cs."ClaimServiceStatus" = 1
+              GROUP BY cs."ClaimID", cs."ProdID")
+    SELECT c."ClaimCode", -- 0
+           c."DateClaimed",
+           ca."OtherNames"                   "OtherNamesAdmin",
+           ca."LastName"                     "LastNameAdmin",
+           c."DateFrom",
+           c."DateTo",-- 5
+           i."CHFID",
+           i."OtherNames",
+           i."LastName",
+           c."HFID",
+           hf."HFCode", -- 10
+           hf."HFName",
+           hf."AccCode",
+           prod."ProdID",     --
+           prod."ProductCode",--
+           prod."ProductName",-- 15
+           c."Claimed"                       "PriceAsked",
+           SUM(cdetails."PriceApproved")     "PriceApproved",
+           SUM(cdetails."PriceAdjusted")     "PriceAdjusted",
+           SUM(cdetails."RemuneratedAmount") "RemuneratedAmount",
+           d."DistrictId", -- 20
+           d."DistrictName",
+           r."RegionId",
+           r."RegionName" -- 23
+
+    FROM "tblClaim" c
+             INNER JOIN "tblInsuree" i ON i."InsureeID" = c."InsureeID"
+             LEFT OUTER JOIN "tblClaimAdmin" ca ON ca."ClaimAdminId" = c."ClaimAdminId"
+             INNER JOIN "tblHF" hf ON hf."HfID" = c."HFID"
+             INNER JOIN cdetails ON cdetails."ClaimID" = c."ClaimID"
+             INNER JOIN "tblProduct" prod ON prod."ProdID" = cdetails."ProdID"
+             INNER JOIN "tblFamilies" f ON f."FamilyID" = i."FamilyID"
+             INNER JOIN "tblVillages" v ON v."VillageId" = f."LocationId"
+             INNER JOIN "tblWards" w ON w."WardId" = v."WardId"
+             INNER JOIN "tblDistricts" d ON d."DistrictId" = w."DistrictId"
+             INNER JOIN "tblRegions" r ON r."RegionId" = d."Region"
+
+    WHERE c."ValidityTo" IS NULL
+      AND (prod."LocationId" = %(location_id)s OR %(location_id)s = 0 OR prod."LocationId" IS NULL)
+      AND (prod."ProdID" = %(prod_id)s OR %(prod_id)s = 0)
+      AND (c."RunID" = %(run_id)s OR %(run_id)s = 0)
+      AND (hf."HfID" = %(hf_id)s OR %(hf_id)s = 0)
+      AND (hf."HFLevel" = %(hf_level)s OR %(hf_level)s = '')
+      AND (c."DateTo" BETWEEN %(date_from)s AND %(date_to)s)
+      -- TO AVOID DOUBLE COUNT WITH CAPITATION
+      AND NOT (hf."HFLevel" = coalesce(prod."Level1", 'A') AND (HF."HFSublevel" = coalesce(prod."Sublevel1", HF."HFSublevel")))
+      AND NOT (hf."HFLevel" = coalesce(prod."Level2", 'A') AND (HF."HFSublevel" = coalesce(prod."Sublevel2", HF."HFSublevel")))
+      AND NOT (hf."HFLevel" = coalesce(prod."Level3", 'A') AND (HF."HFSublevel" = coalesce(prod."Sublevel3", HF."HFSublevel")))
+      AND NOT (hf."HFLevel" = coalesce(prod."Level4", 'A') AND (HF."HFSublevel" = coalesce(prod."Sublevel4", HF."HFSublevel")))
+
+
+    GROUP BY c."ClaimCode", c."DateClaimed", ca."OtherNames", ca."LastName", c."DateFrom", c."DateTo", i."CHFID", 
+             i."OtherNames", i."LastName", c."HFID", hf."HFCode", hf."HFName", hf."AccCode", 
+             prod."ProdID", prod."ProductCode", prod."ProductName", c."Claimed",
+             d."DistrictId", d."DistrictName", r."RegionId", r."RegionName"
+"""
+
+
 def process_batch_report_data_with_claims(prms):
     with connection.cursor() as cur:
-        sql = """\
-            EXEC [dbo].[uspSSRSProcessBatchWithClaim]
-                @LocationId = %s,
-                @ProdID = %s,
-                @RunID = %s,
-                @HFID = %s,
-                @HFLevel = %s,
-                @DateFrom = %s,
-                @DateTo = %s
-        """
-        cur.execute(sql, (
-            prms.get('locationId', 0),
-            prms.get('prodId', 0),
-            prms.get('runId', 0),
-            prms.get('hfId', 0),
-            prms.get('hfLevel', ''),
-            prms.get('dateFrom', ''),
-            prms.get('dateTo', '')
-        ))
-        # stored proc outputs several results,
-        # we are only interested in the last one
-        next = True
-        data = None
-        while next:
-            try:
-                data = cur.fetchall()
-            except Exception:
-                pass
-            finally:
-                next = cur.nextset()
+        cur.execute(
+            _process_batch_report_data_with_claims_sql,
+            {
+                'location_id': prms.get('locationId', 0),
+                'prod_id': prms.get('prodId', 0),
+                'run_id': prms.get('runId', 0),
+                'hf_id': prms.get('hfId', 0),
+                'hf_level': prms.get('hfLevel', ''),
+                'date_from': prms.get('dateFrom', ''),
+                'date_to': prms.get('dateTo', ''),
+            }
+        )
+        try:
+            data = cur.fetchall()
+        except Exception:
+            logger.exception("Error fetching data batch with claims")
+            raise
+    # would be easier to use a dict from the cursor, but it has a performance impact
     return [{
         "ClaimCode": row[0],
         "DateClaimed": row[1].strftime("%Y-%m-%d") if row[1] is not None else None,
