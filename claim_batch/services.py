@@ -233,7 +233,7 @@ def trigger_calculation_based_on_context(
     if work_data["payment_plans"]:
         for payment_plan in work_data["payment_plans"]:
             start_date = get_start_date(end_date, payment_plan.periodicity)
-            # run only when it makes sense based on periodicitiy
+            # run only when it makes sense based on periodicity
             if start_date is not None:
                 allocated_contribution, work_data = update_work_data(
                     work_data, product, start_date, end_date, allocated_contribution
@@ -283,7 +283,7 @@ def get_items_queryset(product, start_date, end_date):
         .filter(claim__process_stamp__gte=start_date) \
         .filter(product=product) \
         .select_related('claim__health_facility') \
-        .order_by('claim__health_facility').order_by('claim')
+        .order_by('claim__health_facility', 'claim')
 
 
 def get_services_queryset(product, start_date, end_date):
@@ -293,7 +293,7 @@ def get_services_queryset(product, start_date, end_date):
         .filter(validity_to__isnull=True) \
         .filter(product=product) \
         .select_related('claim__health_facility') \
-        .order_by('claim__health_facility').order_by('claim')
+        .order_by('claim__health_facility', 'claim')
 
 
 def get_claim_queryset(product, start_date, end_date):
@@ -360,8 +360,8 @@ def get_invoice_payment_queryset(product, start_date, end_date):
 
 
 def get_allocated_premium(premiums, start_date, end_date):
-    # Calculate allcated contributions
-    # go trough the contribution and find the allocated contribution
+    # Calculate allocated contributions
+    # go through the contribution and find the allocated contribution
     allocated_premiums = 0
     for premium in premiums:
         allocation_start = max(premium.policy.effective_date, start_date)
@@ -377,7 +377,7 @@ def get_allocated_premium(premiums, start_date, end_date):
 
 
 def get_hospital_claim_filter(ceiling_interpretation, mode='I', prefix=''):
-    # return the filter base on cieling interpretation and mode (I inpatient, O outpatient),
+    # return the filter base on ceiling interpretation and mode (I inpatient, O outpatient),
     # prefix is required if the queryset is not about claims
     if ceiling_interpretation == Product.CEILING_INTERPRETATION_HOSPITAL:
         Qterm = (Q(('%shealth_facility_level' % prefix, HealthFacility.LEVEL_HOSPITAL)))
