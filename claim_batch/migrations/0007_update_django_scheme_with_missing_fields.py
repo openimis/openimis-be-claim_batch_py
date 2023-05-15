@@ -8,7 +8,7 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ('location', '0013_auto_20230317_1534'),
-        ('product', '0007_auto_20230515_0949'),
+        ('product', '0006_insert_ceiling_type'),
         ('claim_batch', '0006_capitationpayment'),
     ]
 
