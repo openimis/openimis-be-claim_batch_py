@@ -21,7 +21,7 @@ class BatchRun(core_models.VersionedModel):
     run_month = models.SmallIntegerField(db_column='RunMonth')
 
     class Meta:
-        managed = False
+        managed = True
         db_table = 'tblBatchRun'
 
 
@@ -43,7 +43,7 @@ class RelativeIndex(core_models.VersionedModel):
     )
 
     class Meta:
-        managed = False
+        managed = True
         db_table = 'tblRelIndex'
 
     CARE_TYPE_OUT_PATIENT = "O"
@@ -81,7 +81,7 @@ class RelativeDistribution(models.Model):
     audit_user_id = models.IntegerField(db_column='AuditUserID')
 
     class Meta:
-        managed = False
+        managed = True
         db_table = 'tblRelDistr'
 
 
