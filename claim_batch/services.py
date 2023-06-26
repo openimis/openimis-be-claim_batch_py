@@ -279,7 +279,7 @@ def update_work_data(work_data, product, start_date, end_date, allocated_contrib
 def get_payment_plan_queryset(product, end_date):
     return PaymentPlan.objects \
         .filter(date_valid_to__gte=end_date) \
-        .filter(date_valid_from__lte=end_date) \
+        .filter(Q(date_valid_to__gte=end_date) | Q(date_valid_to__isnull=True)) \
         .filter(benefit_plan_id=product.id) \
         .filter(benefit_plan_type=product_content_type()) \
         .filter(is_deleted=False)
@@ -297,10 +297,10 @@ def get_items_queryset(product, start_date, end_date):
 
 def get_services_queryset(product, start_date, end_date):
     return ClaimService.objects \
-        .filter(claim__process_stamp__lte=end_date) \
-        .filter(claim__process_stamp__gte=start_date) \
-        .filter(validity_to__isnull=True) \
-        .filter(product=product) \
+        .filter(claim__process_stamp__lte=end_date,
+            claim__process_stamp__gte=start_date,
+            validity_to__isnull=True,
+            product=product) \
         .select_related('claim__health_facility') \
         .order_by('claim__health_facility', 'claim')
 
@@ -466,7 +466,7 @@ def update_claim_valuated(claims, batch_run, claim_based_value_subquery=0):
 
 
 # This query works on MSSQL and Postgres
-_process_batch_report_data_with_claims_sql = """
+_process_batch_report_data_sql1 = """
    WITH "cdetails" AS
              (SELECT ci."ClaimID",
                      ci."ProdID",
@@ -491,6 +491,9 @@ _process_batch_report_data_with_claims_sql = """
               WHERE cs."ValidityTo" IS NULL
                 AND cs."ClaimServiceStatus" = 1
               GROUP BY cs."ClaimID", cs."ProdID")
+"""
+
+_process_batch_report_data_with_claims_sql2 = """
     SELECT c."ClaimCode", -- 0
            c."DateClaimed",
            ca."OtherNames"                   "OtherNamesAdmin",
@@ -515,7 +518,25 @@ _process_batch_report_data_with_claims_sql = """
            d."DistrictName",
            r."RegionId",
            r."RegionName" -- 23
+"""
 
+_process_batch_report_data_no_claims_sql2 = """
+    SELECT r."RegionName",
+           d."DistrictName",
+           hf."HFCode",
+           hf."HFName",
+           prod."ProductCode",
+           prod."ProductName",
+           SUM(cdetails."RemuneratedAmount") "RemuneratedAmount",
+           prod."AccCodeRemuneration",
+           hf."AccCode",
+           prod."ProdID",
+           d."DistrictId",
+           r."RegionId"
+"""
+
+
+_process_batch_report_data_sql3 = """
     FROM "tblClaim" c
              INNER JOIN "tblInsuree" i ON i."InsureeID" = c."InsureeID"
              LEFT OUTER JOIN "tblClaimAdmin" ca ON ca."ClaimAdminId" = c."ClaimAdminId"
@@ -540,14 +561,33 @@ _process_batch_report_data_with_claims_sql = """
       AND NOT (hf."HFLevel" = coalesce(prod."Level2", 'A') AND (HF."HFSublevel" = coalesce(prod."Sublevel2", HF."HFSublevel")))
       AND NOT (hf."HFLevel" = coalesce(prod."Level3", 'A') AND (HF."HFSublevel" = coalesce(prod."Sublevel3", HF."HFSublevel")))
       AND NOT (hf."HFLevel" = coalesce(prod."Level4", 'A') AND (HF."HFSublevel" = coalesce(prod."Sublevel4", HF."HFSublevel")))
+"""
 
-
+_process_batch_report_data_with_claims_sql4 = """
     GROUP BY c."ClaimCode", c."DateClaimed", ca."OtherNames", ca."LastName", c."DateFrom", c."DateTo", i."CHFID", 
              i."OtherNames", i."LastName", c."HFID", hf."HFCode", hf."HFName", hf."AccCode", 
              prod."ProdID", prod."ProductCode", prod."ProductName", c."Claimed",
              d."DistrictId", d."DistrictName", r."RegionId", r."RegionName"
 """
 
+_process_batch_report_data_no_claims_sql4 = """
+    GROUP BY hf."HFCode", hf."HFName", hf."AccCode", 
+             prod."ProdID", prod."ProductCode", prod."ProductName",
+             d."DistrictId", d."DistrictName", r."RegionId", r."RegionName"
+    HAVING SUM("cdetails"."RemuneratedAmount") > %(min_remunerated)s
+"""
+
+_process_batch_report_data_with_claims_sql = \
+    _process_batch_report_data_sql1 + \
+    _process_batch_report_data_with_claims_sql2 + \
+    _process_batch_report_data_sql3 + \
+    _process_batch_report_data_with_claims_sql4
+
+_process_batch_report_data_no_claims_sql = \
+    _process_batch_report_data_sql1 + \
+    _process_batch_report_data_no_claims_sql2 + \
+    _process_batch_report_data_sql3 + \
+    _process_batch_report_data_no_claims_sql4
 
 def process_batch_report_data_with_claims(prms):
     with connection.cursor() as cur:
@@ -599,36 +639,25 @@ def process_batch_report_data_with_claims(prms):
 
 def process_batch_report_data(prms):
     with connection.cursor() as cur:
-        sql = """\
-            EXEC [dbo].[uspSSRSProcessBatch]
-                @LocationId = %s,
-                @ProdID = %s,
-                @RunID = %s,
-                @HFID = %s,
-                @HFLevel = %s,
-                @DateFrom = %s,
-                @DateTo = %s
-        """
-        cur.execute(sql, (
-            prms.get('locationId', 0),
-            prms.get('prodId', 0),
-            prms.get('runId', 0),
-            prms.get('hfId', 0),
-            prms.get('hfLevel', ''),
-            prms.get('dateFrom', ''),
-            prms.get('dateTo', '')
-        ))
-        # stored proc outputs several results,
-        # we are only interested in the last one
-        next = True
-        data = None
-        while next:
-            try:
-                data = cur.fetchall()
-            except Exception:
-                pass
-            finally:
-                next = cur.nextset()
+        cur.execute(
+            _process_batch_report_data_no_claims_sql,
+            {
+                'location_id': prms.get('locationId', 0),
+                'prod_id': prms.get('prodId', 0),
+                'run_id': prms.get('runId', 0),
+                'hf_id': prms.get('hfId', 0),
+                'hf_level': prms.get('hfLevel', ''),
+                'date_from': prms.get('dateFrom', ''),
+                'date_to': prms.get('dateTo', ''),
+                'min_remunerated': prms.get('minRemunerated', 0)
+            }
+        )
+        try:
+            data = cur.fetchall()
+        except Exception:
+            logger.exception("Error fetching data batch without claims")
+            raise
+    # would be easier to use a dict from the cursor, but it has a performance impact
     return [{
         "RegionName": row[0],
         "DistrictName": row[1],
