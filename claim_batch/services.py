@@ -534,7 +534,7 @@ _process_batch_report_data_with_claims_sql = """
       AND (c."RunID" = %(run_id)s OR %(run_id)s = 0)
       AND (hf."HfID" = %(hf_id)s OR %(hf_id)s = 0)
       AND (hf."HFLevel" = %(hf_level)s OR %(hf_level)s = '')
-      AND (c."DateTo" BETWEEN %(date_from)s AND %(date_to)s)
+      AND (coalesce(c."DateTo", c."DateFrom") BETWEEN %(date_from)s AND %(date_to)s)
       -- TO AVOID DOUBLE COUNT WITH CAPITATION
       AND NOT (hf."HFLevel" = coalesce(prod."Level1", 'A') AND (HF."HFSublevel" = coalesce(prod."Sublevel1", HF."HFSublevel")))
       AND NOT (hf."HFLevel" = coalesce(prod."Level2", 'A') AND (HF."HFSublevel" = coalesce(prod."Sublevel2", HF."HFSublevel")))
