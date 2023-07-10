@@ -4,6 +4,7 @@ import uuid
 import logging
 import pandas as pd
 from django.contrib.admin.options import get_content_type_for_model
+from django.contrib.contenttypes.models import ContentType
 
 import core
 
@@ -24,7 +25,7 @@ from location.models import HealthFacility, Location
 from product.models import Product, ProductItemOrService
 
 logger = logging.getLogger(__name__)
-
+product_content_type = ContentType.objects.get_for_model(Product)
 
 @core.comparable
 class ProcessBatchSubmit(object):
@@ -272,7 +273,8 @@ def get_payment_plan_queryset(product, end_date):
     return PaymentPlan.objects \
         .filter(date_valid_to__gte=end_date) \
         .filter(date_valid_from__lte=end_date) \
-        .filter(benefit_plan=product) \
+        .filter(benefit_plan_id=product.id) \
+        .filter(benefit_plan_type=product_content_type) \
         .filter(is_deleted=False)
 
 
