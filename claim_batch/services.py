@@ -25,7 +25,11 @@ from location.models import HealthFacility, Location
 from product.models import Product, ProductItemOrService
 
 logger = logging.getLogger(__name__)
-product_content_type = ContentType.objects.get_for_model(Product)
+
+
+@property
+def product_content_type():
+    return ContentType.objects.get_for_model(Product)
 
 @core.comparable
 class ProcessBatchSubmit(object):
