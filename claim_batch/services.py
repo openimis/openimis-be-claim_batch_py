@@ -4,6 +4,8 @@ import uuid
 import logging
 import pandas as pd
 from django.contrib.admin.options import get_content_type_for_model
+from django.contrib.contenttypes.models import ContentType
+
 
 import core
 
@@ -22,8 +24,15 @@ from core.signals import *
 from invoice.models import BillPayment, InvoicePayment, BillItem, InvoiceLineItem
 from location.models import HealthFacility, Location
 from product.models import Product, ProductItemOrService
+from functools import lru_cache
 
 logger = logging.getLogger(__name__)
+
+
+@lru_cache(maxsize=None)
+def product_content_type():
+    # Wrapped in function as property is not compliant with type and static variable fails migrations.
+    return ContentType.objects.get_for_model(Product)
 
 
 @core.comparable
@@ -272,7 +281,9 @@ def get_payment_plan_queryset(product, end_date):
     return PaymentPlan.objects \
         .filter(date_valid_to__gte=end_date) \
         .filter(date_valid_from__lte=end_date) \
-        .filter(benefit_plan=product) \
+
+        .filter(benefit_plan_id=product.id) \
+        .filter(benefit_plan_type=product_content_type()) \
         .filter(is_deleted=False)
 
 
@@ -701,7 +712,7 @@ def add_sums_by_prod(data, regions_sum, districts_sum, products_sum, show_claims
                  'SUMP_RemuneratedAmount': products_sum['RemuneratedAmount'][
                      (row['RegionName'], row['DistrictName'], row['ProductCode'])]
                  } for row in data]
-    else:
+    else:delcroip-patch-1
         data = [{**row,
                  **region_and_district_sums(row, regions_sum, districts_sum, show_claims),
                  'SUMP_RemuneratedAmount': products_sum[(row['RegionName'], row['DistrictName'], row['ProductCode'])]
