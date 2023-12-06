@@ -281,7 +281,6 @@ def get_payment_plan_queryset(product, end_date):
     return PaymentPlan.objects \
         .filter(date_valid_to__gte=end_date) \
         .filter(date_valid_from__lte=end_date) \
-
         .filter(benefit_plan_id=product.id) \
         .filter(benefit_plan_type=product_content_type()) \
         .filter(is_deleted=False)
