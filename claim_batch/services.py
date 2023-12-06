@@ -712,7 +712,7 @@ def add_sums_by_prod(data, regions_sum, districts_sum, products_sum, show_claims
                  'SUMP_RemuneratedAmount': products_sum['RemuneratedAmount'][
                      (row['RegionName'], row['DistrictName'], row['ProductCode'])]
                  } for row in data]
-    else:delcroip-patch-1
+    else:
         data = [{**row,
                  **region_and_district_sums(row, regions_sum, districts_sum, show_claims),
                  'SUMP_RemuneratedAmount': products_sum[(row['RegionName'], row['DistrictName'], row['ProductCode'])]
