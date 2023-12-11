@@ -6,7 +6,6 @@ import pandas as pd
 from django.contrib.admin.options import get_content_type_for_model
 from django.contrib.contenttypes.models import ContentType
 
-
 import core
 
 from datetime import date
