@@ -1,27 +1,22 @@
 import calendar
 import datetime
-import uuid
 import logging
 import pandas as pd
-from django.contrib.admin.options import get_content_type_for_model
 
 import core
 
-from datetime import date
 from django.db import connection, transaction
-from django.db.models import Value, F, Sum, Q, Prefetch, Count, Subquery, OuterRef, FloatField
-from django.db.models.functions import Coalesce, ExtractMonth, ExtractYear
+from django.db.models import Value, F, Sum, Q, Subquery, OuterRef, FloatField
+from django.db.models.functions import Coalesce
 from django.utils.translation import gettext as _
 
-from calculation.services import run_calculation_rules, get_calculation_object
-from claim.models import ClaimItem, Claim, ClaimService, ClaimDetail
-from claim_batch.models import BatchRun, RelativeIndex, RelativeDistribution
+from calculation.services import get_calculation_object
+from claim.models import ClaimItem, Claim, ClaimService
+from claim_batch.models import BatchRun
 from contribution.models import Premium
 from contribution_plan.models import PaymentPlan
-from core.signals import *
-from invoice.models import BillPayment, InvoicePayment, BillItem, InvoiceLineItem
 from location.models import HealthFacility, Location
-from product.models import Product, ProductItemOrService
+from product.models import Product
 
 logger = logging.getLogger(__name__)
 
@@ -145,8 +140,8 @@ def process_batch(audit_user_id, location_id, period, year):
         return [str(ProcessBatchSubmitError(2))]
     _, days_in_month = calendar.monthrange(year, period)
     end_date = datetime.datetime(year, period, days_in_month)
-    now = datetime.datetime.now()
     # TODO - double check this condition
+    # now = datetime.datetime.now()
     # if end_date < now:
     #    return [str(ProcessBatchSubmitError(3))]
     ## TODO create message "Batch cannot be run before the end of the selected period"
@@ -179,7 +174,6 @@ def _get_capitation_region_and_district(location_id):
 
 
 def do_process_batch(audit_user_id, location_id, end_date):
-    processed_ids = set()  # As we update claims, we add the claims not in relative pricing and then update the status
     period = end_date.month
     year = end_date.year
     logger.debug("do_process_batch location %s for %s/%s", location_id, period, year)
@@ -193,8 +187,6 @@ def do_process_batch(audit_user_id, location_id, end_date):
     # 0 prepare the batch run :  does it really make sense
     # per location ? (Ideally per pool but the notion doesn't exist yet)
     # 0.1 get all product concerned, all product that have are configured for the location
-    # init start dates
-    start_date = None
 
     # period_quarter = period - 2 if period % 3 == 0 else 0
     # period_sem = period - 5 if period % 6 == 0 else 0
@@ -238,6 +230,9 @@ def trigger_calculation_based_on_context(
                 allocated_contribution, work_data = update_work_data(
                     work_data, product, start_date, end_date, allocated_contribution
                 )
+                if not work_data["claims"]:
+                    logger.warning("there was no claim matching the requested criteria - not continuing")
+                    return None
                 calculation = get_calculation_object(payment_plan.calculation)
                 if calculation is not None:
                     rcr = calculation.calculate_if_active_for_object(
@@ -252,18 +247,14 @@ def trigger_calculation_based_on_context(
 def update_work_data(work_data, product, start_date, end_date, allocated_contribution=None):
     work_data["start_date"] = start_date
     # 1.3 generate queryset
-    work_data["items"] = get_items_queryset(product, start_date, end_date)
-    work_data["services"] = get_services_queryset(product, start_date, end_date)
-    work_data["contributions"] = get_contribution_queryset(product, start_date, end_date)
     work_data['claims'] = get_claim_queryset(product, start_date, end_date)
-    work_data['bill_payments'] = get_bill_payment_queryset(product, start_date, end_date)
-    work_data['invoice_payments'] = get_invoice_payment_queryset(product, start_date, end_date)
+    work_data["contributions"] = get_contribution_queryset(product, start_date, end_date)
     if allocated_contribution is None:
         allocated_contribution = {}
     start_date_str = str(start_date)
     if start_date_str not in allocated_contribution:
-        allocated_contribution[start_date_str] = get_allocated_premium(
-            get_allocated_contribution_queryset(product, start_date, end_date), start_date, end_date)
+        allocated_contributions_qs = get_allocated_contribution_queryset(product, start_date, end_date)
+        allocated_contribution[start_date_str] = get_allocated_premium(allocated_contributions_qs, start_date, end_date)
     work_data['allocated_contributions'] = allocated_contribution[start_date_str]
     return allocated_contribution, work_data
 
@@ -271,37 +262,15 @@ def update_work_data(work_data, product, start_date, end_date, allocated_contrib
 def get_payment_plan_queryset(product, end_date):
     return PaymentPlan.objects \
         .filter(Q(date_valid_from__lte=end_date)
-            & Q(benefit_plan=product)
-            & Q(is_deleted=False)
-            & (Q(date_valid_to__gte=end_date) | Q(date_valid_to__isnull=True)))
-
-
-def get_items_queryset(product, start_date, end_date):
-    return ClaimItem.objects \
-        .filter(validity_to__isnull=True) \
-        .filter(claim__process_stamp__lte=end_date) \
-        .filter(claim__process_stamp__gte=start_date) \
-        .filter(product=product) \
-        .select_related('claim__health_facility') \
-        .order_by('claim__health_facility', 'claim')
-
-
-def get_services_queryset(product, start_date, end_date):
-    return ClaimService.objects \
-        .filter(claim__process_stamp__lte=end_date,
-            claim__process_stamp__gte=start_date,
-            validity_to__isnull=True,
-            product=product) \
-        .select_related('claim__health_facility') \
-        .order_by('claim__health_facility', 'claim')
+                & Q(benefit_plan=product)
+                & Q(is_deleted=False)
+                & (Q(date_valid_to__gte=end_date) | Q(date_valid_to__isnull=True)))
 
 
 def get_claim_queryset(product, start_date, end_date):
     return Claim.objects \
-        .filter(validity_from__lte=end_date) \
-        .filter(validity_from__gte=start_date) \
         .filter(validity_to__isnull=True) \
-        .filter(process_stamp__lte=end_date) \
+        .filter(process_stamp__range=[start_date, end_date]) \
         .filter((Q(items__product=product) | Q(services__product=product))) \
         .distinct()
 
@@ -333,32 +302,6 @@ def get_contribution_queryset(product, start_date, end_date):
         .filter(policy__product=product)
 
 
-def get_bill_payment_queryset(product, start_date, end_date):
-    return BillPayment.objects \
-        .filter(is_deleted=False) \
-        .filter(date_created__range=(start_date, end_date)) \
-        .filter(bill__line_items_bill__in=BillItem.objects
-                .filter(is_deleted=False)
-                .filter(line_type=get_content_type_for_model(Premium))
-                .filter(line_id__in=Premium.objects
-                        .filter(validity_to__isnull=True)
-                        .filter(policy__product=product)
-                        .values_list('id', flat=True)))
-
-
-def get_invoice_payment_queryset(product, start_date, end_date):
-    return InvoicePayment.objects \
-        .filter(is_deleted=False) \
-        .filter(date_created__range=(start_date, end_date)) \
-        .filter(invoice__line_items__in=InvoiceLineItem.objects
-                .filter(is_deleted=False)
-                .filter(line_type=get_content_type_for_model(Premium))
-                .filter(line_id__in=Premium.objects
-                        .filter(validity_to__isnull=True)
-                        .filter(policy__product=product)
-                        .values_list('id', flat=True)))
-
-
 def get_allocated_premium(premiums, start_date, end_date):
     # Calculate allocated contributions
     # go through the contribution and find the allocated contribution
@@ -377,7 +320,7 @@ def get_allocated_premium(premiums, start_date, end_date):
 
 
 def get_hospital_claim_filter(ceiling_interpretation, mode='I', prefix=''):
-    # return the filter base on ceiling interpretation and mode (I inpatient, O outpatient),
+    # return the filter base on ceiling interpretation and mode (I in-patient, O out-patient),
     # prefix is required if the queryset is not about claims
     if ceiling_interpretation == Product.CEILING_INTERPRETATION_HOSPITAL:
         Qterm = (Q(('%shealth_facility_level' % prefix, HealthFacility.LEVEL_HOSPITAL)))
@@ -526,7 +469,6 @@ _process_batch_report_data_no_claims_sql2 = """
            r."RegionId"
 """
 
-
 _process_batch_report_data_sql3 = """
     FROM "tblClaim" c
              INNER JOIN "tblInsuree" i ON i."InsureeID" = c."InsureeID"
@@ -579,6 +521,7 @@ _process_batch_report_data_no_claims_sql = \
     _process_batch_report_data_no_claims_sql2 + \
     _process_batch_report_data_sql3 + \
     _process_batch_report_data_no_claims_sql4
+
 
 def process_batch_report_data_with_claims(prms):
     with connection.cursor() as cur:
