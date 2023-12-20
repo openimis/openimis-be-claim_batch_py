@@ -448,15 +448,15 @@ _process_batch_report_data_with_claims_sql2 = """
            SUM(cdetails."PriceApproved")     "PriceApproved",
            SUM(cdetails."PriceAdjusted")     "PriceAdjusted",
            SUM(cdetails."RemuneratedAmount") "RemuneratedAmount",
-           d."DistrictId", -- 20
-           d."DistrictName",
-           r."RegionId",
-           r."RegionName" -- 23
+           d."LocationId"                    "DistrictId", -- 20
+           d."LocationName"                  "DistrictName",
+           r."LocationId"                    "RegionId",
+           r."LocationName"                  "RegionName" -- 23
 """
 
 _process_batch_report_data_no_claims_sql2 = """
-    SELECT r."RegionName",
-           d."DistrictName",
+    SELECT r."LocationName",
+           d."LocationName",
            hf."HFCode",
            hf."HFName",
            prod."ProductCode",
@@ -465,8 +465,8 @@ _process_batch_report_data_no_claims_sql2 = """
            prod."AccCodeRemuneration",
            hf."AccCode",
            prod."ProdID",
-           d."DistrictId",
-           r."RegionId"
+           d."LocationId",
+           r."LocationId"
 """
 
 _process_batch_report_data_sql3 = """
@@ -477,10 +477,10 @@ _process_batch_report_data_sql3 = """
              INNER JOIN cdetails ON cdetails."ClaimID" = c."ClaimID"
              INNER JOIN "tblProduct" prod ON prod."ProdID" = cdetails."ProdID"
              INNER JOIN "tblFamilies" f ON f."FamilyID" = i."FamilyID"
-             INNER JOIN "tblVillages" v ON v."VillageId" = f."LocationId"
-             INNER JOIN "tblWards" w ON w."WardId" = v."WardId"
-             INNER JOIN "tblDistricts" d ON d."DistrictId" = w."DistrictId"
-             INNER JOIN "tblRegions" r ON r."RegionId" = d."Region"
+             INNER JOIN "tblLocations" v ON v."LocationId" = f."LocationId"
+             INNER JOIN "tblLocations" w ON w."LocationId" = v."ParentLocationId"
+             INNER JOIN "tblLocations" d ON d."LocationId" = w."ParentLocationId"
+             INNER JOIN "tblLocations" r ON r."LocationId" = d."ParentLocationId"
 
     WHERE c."ValidityTo" IS NULL
       AND (prod."LocationId" = %(location_id)s OR %(location_id)s = 0 OR prod."LocationId" IS NULL)
@@ -500,13 +500,13 @@ _process_batch_report_data_with_claims_sql4 = """
     GROUP BY c."ClaimCode", c."DateClaimed", ca."OtherNames", ca."LastName", c."DateFrom", c."DateTo", i."CHFID", 
              i."OtherNames", i."LastName", c."HFID", hf."HFCode", hf."HFName", hf."AccCode", 
              prod."ProdID", prod."ProductCode", prod."ProductName", c."Claimed",
-             d."DistrictId", d."DistrictName", r."RegionId", r."RegionName"
+             d."LocationId", d."LocationName", r."LocationId", r."LocationName"
 """
 
 _process_batch_report_data_no_claims_sql4 = """
     GROUP BY hf."HFCode", hf."HFName", hf."AccCode", 
              prod."ProdID", prod."ProductCode", prod."ProductName",
-             d."DistrictId", d."DistrictName", r."RegionId", r."RegionName"
+             d."LocationId", d."LocationName", r."LocationId", r."LocationName"
     HAVING SUM("cdetails"."RemuneratedAmount") > %(min_remunerated)s
 """
 
