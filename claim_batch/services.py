@@ -9,9 +9,9 @@ from django.contrib.contenttypes.models import ContentType
 import core
 
 from datetime import date
-from django.db import connection, transaction
-from django.db.models import Value, F, Sum, Q, Prefetch, Count, Subquery, OuterRef, FloatField
-from django.db.models.functions import Coalesce, ExtractMonth, ExtractYear
+from django.db import connection, transaction, DatabaseError
+from django.db.models import Value, F, Sum, Q, Prefetch, Count, Subquery, OuterRef, FloatField, TextField
+from django.db.models.functions import Coalesce, ExtractMonth, ExtractYear, Cast
 from django.utils.translation import gettext as _
 
 from calculation.services import run_calculation_rules, get_calculation_object
@@ -214,7 +214,7 @@ def do_process_batch(audit_user_id, location_id, end_date):
             logger.debug("do_process_batch creating work_data for batch run process")
             work_data = {"created_run": created_run, "product": product, "end_date": end_date}
             logger.debug("do_process_batch created work_data for batch run process")
-            allocated_contribution = {}
+            allocated_contribution = None
             # 1.2 get all the payment plan per product
             work_data["payment_plans"] = get_payment_plan_queryset(product, end_date)
             # valuate the claims
@@ -259,12 +259,13 @@ def trigger_calculation_based_on_context(
 
 def update_work_data(work_data, product, start_date, end_date, allocated_contribution=None):
     work_data["start_date"] = start_date
-    # 1.3 generate queryset
+# 1.3 generate queryset
     work_data["items"] = get_items_queryset(product, start_date, end_date)
     work_data["services"] = get_services_queryset(product, start_date, end_date)
     work_data["contributions"] = get_contribution_queryset(product, start_date, end_date)
     work_data['claims'] = get_claim_queryset(product, start_date, end_date)
     work_data['bill_payments'] = get_bill_payment_queryset(product, start_date, end_date)
+    
     work_data['invoice_payments'] = get_invoice_payment_queryset(product, start_date, end_date)
     if allocated_contribution is None:
         allocated_contribution = {}
@@ -343,29 +344,35 @@ def get_contribution_queryset(product, start_date, end_date):
 
 
 def get_bill_payment_queryset(product, start_date, end_date):
-    return BillPayment.objects \
-        .filter(is_deleted=False) \
-        .filter(date_created__range=(start_date, end_date)) \
-        .filter(bill__line_items_bill__in=BillItem.objects
-                .filter(is_deleted=False)
-                .filter(line_type=get_content_type_for_model(Premium))
-                .filter(line_id__in=Premium.objects
+    # need to get the invoice with lines that match premium for that product
+
+    
+    qs = BillPayment.objects.filter(is_deleted=False)\
+        .filter(date_created__gte=start_date, date_created__lt=end_date)\
+        .filter(bill__line_items_bill__line_type=get_content_type_for_model(Premium),
+                bill__line_items_bill__line_id__in=Subquery(Premium.objects
                         .filter(validity_to__isnull=True)
                         .filter(policy__product=product)
-                        .values_list('id', flat=True)))
+                        .annotate(as_str=Cast('id', TextField())).values('as_str')
+                        
+                    ))
+    return qs
 
 
 def get_invoice_payment_queryset(product, start_date, end_date):
-    return InvoicePayment.objects \
-        .filter(is_deleted=False) \
-        .filter(date_created__range=(start_date, end_date)) \
-        .filter(invoice__line_items__in=InvoiceLineItem.objects
-                .filter(is_deleted=False)
-                .filter(line_type=get_content_type_for_model(Premium))
-                .filter(line_id__in=Premium.objects
+    
+    qs = InvoicePayment.objects.filter(is_deleted=False)\
+    .filter(date_created__gte=start_date, date_created__lt=end_date)\
+    .filter(invoice__line_items__line_type=get_content_type_for_model(Premium),
+                invoice__line_items__line_id__in=Subquery(Premium.objects
                         .filter(validity_to__isnull=True)
                         .filter(policy__product=product)
-                        .values_list('id', flat=True)))
+                        .annotate(as_str=Cast('id', TextField())).values('as_str')
+                    ))
+    return qs
+
+            
+        
 
 
 def get_allocated_premium(premiums, start_date, end_date):
