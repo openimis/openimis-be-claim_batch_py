@@ -142,13 +142,14 @@ def process_batch(audit_user_id, location_id, period, year):
         location_id = None
 
     # Transactional stuff
-    already_run_batch = BatchRun.objects \
-        .filter(run_year=year) \
-        .filter(run_month=period) \
-        .annotate(nn_location_id=Coalesce("location_id", Value(-1))) \
-        .filter(nn_location_id=-1 if location_id is None else location_id) \
-        .filter(validity_to__isnull=True).values("id").first()
+    queryset = BatchRun.objects \
+        .filter(run_year=year,run_month=period,*filter_validtity())
+    if location_id is None:
+        queryset=queryset.filter(location_id__isnull = True)
+    else:
+        queryset=queryset.filter(location__id = location_id)
 
+    already_run_batch = queryset.values("id").first()
     if already_run_batch:
         return [str(ProcessBatchSubmitError(2))]
     _, days_in_month = calendar.monthrange(year, period)
@@ -254,7 +255,7 @@ def trigger_calculation_based_on_context(
                         location_id=location_id, start_date=start_date, end_date=end_date
                     )
                     if rcr:
-                        logger.debug("conversion processed for: %s", rcr[0][0])
+                        logger.debug("conversion processed for: %s", str(rcr))
 
 
 def update_work_data(work_data, product, start_date, end_date, allocated_contribution=None):
