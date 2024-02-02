@@ -196,7 +196,7 @@ def do_process_batch(audit_user_id, location_id, end_date):
     created_run = BatchRun.objects.create(location_id=location_id, run_year=year, run_month=period,
                                           run_date=TimeUtils.now(), audit_user_id=audit_user_id,
                                           validity_from=TimeUtils.now())
-    logger.debug("do_process_batch created run: %s", created_run.id)
+    logger.debug(f"do_process_batch created run: {created_run.id}" )
 
     # 0 prepare the batch run :  does it really make sense
     # per location ? (Ideally per pool but the notion doesn't exist yet)
@@ -211,12 +211,12 @@ def do_process_batch(audit_user_id, location_id, end_date):
     # 1 per product (Ideally per pool but the notion doesn't exist yet)
     if products:
         for product in products:
-            logger.debug("do_process_batch creating work_data for batch run process")
+            logger.debug(f"do_process_batch creating batch run process for product {product.code}-{product.name}")
             work_data = {"created_run": created_run, "product": product, "end_date": end_date}
-            logger.debug("do_process_batch created work_data for batch run process")
             allocated_contribution = None
             # 1.2 get all the payment plan per product
             work_data["payment_plans"] = get_payment_plan_queryset(product, end_date)
+            logger.debug(f"{len(work_data['payment_plans'])} payment plan found")
             # valuate the claims
             # 5 Generate BatchPayment per product (Ideally per pool but the notion doesn't exist yet)
             trigger_calculation_based_on_context(
@@ -239,7 +239,9 @@ def trigger_calculation_based_on_context(
         location_id, allocated_contribution, user_id
 ):
     if work_data["payment_plans"]:
+        
         for payment_plan in work_data["payment_plans"]:
+            logger.debug(f"Starting evaluating payment plan {payment_plan.code}")
             start_date = get_start_date(end_date, payment_plan.periodicity)
             # run only when it makes sense based on periodicitiy
             if start_date is not None:
@@ -255,6 +257,10 @@ def trigger_calculation_based_on_context(
                     )
                     if rcr:
                         logger.debug("conversion processed for: %s", rcr[0][0])
+                    else:
+                        logger.debug(f"No conversion done for {payment_plan.code}")
+                else:
+                    logger.debug(f"Calulation nof found for {payment_plan.code}")
 
 
 def update_work_data(work_data, product, start_date, end_date, allocated_contribution=None):
