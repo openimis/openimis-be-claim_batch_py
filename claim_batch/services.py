@@ -142,13 +142,14 @@ def process_batch(audit_user_id, location_id, period, year):
         location_id = None
 
     # Transactional stuff
-    already_run_batch = BatchRun.objects \
-        .filter(run_year=year) \
-        .filter(run_month=period) \
-        .annotate(nn_location_id=Coalesce("location_id", Value(-1))) \
-        .filter(nn_location_id=-1 if location_id is None else location_id) \
-        .filter(validity_to__isnull=True).values("id").first()
+    queryset = BatchRun.objects \
+        .filter(run_year=year,run_month=period,*filter_validtity())
+    if location_id is None:
+        queryset=queryset.filter(location_id__isnull = True)
+    else:
+        queryset=queryset.filter(location__id = location_id)
 
+    already_run_batch = queryset.values("id").first()
     if already_run_batch:
         return [str(ProcessBatchSubmitError(2))]
     _, days_in_month = calendar.monthrange(year, period)
@@ -196,7 +197,7 @@ def do_process_batch(audit_user_id, location_id, end_date):
     created_run = BatchRun.objects.create(location_id=location_id, run_year=year, run_month=period,
                                           run_date=TimeUtils.now(), audit_user_id=audit_user_id,
                                           validity_from=TimeUtils.now())
-    logger.debug("do_process_batch created run: %s", created_run.id)
+    logger.debug(f"do_process_batch created run: {created_run.id}" )
 
     # 0 prepare the batch run :  does it really make sense
     # per location ? (Ideally per pool but the notion doesn't exist yet)
@@ -211,12 +212,12 @@ def do_process_batch(audit_user_id, location_id, end_date):
     # 1 per product (Ideally per pool but the notion doesn't exist yet)
     if products:
         for product in products:
-            logger.debug("do_process_batch creating work_data for batch run process")
+            logger.debug(f"do_process_batch creating batch run process for product {product.code}-{product.name}")
             work_data = {"created_run": created_run, "product": product, "end_date": end_date}
-            logger.debug("do_process_batch created work_data for batch run process")
             allocated_contribution = None
             # 1.2 get all the payment plan per product
             work_data["payment_plans"] = get_payment_plan_queryset(product, end_date)
+            logger.debug(f"{len(work_data['payment_plans'])} payment plan found")
             # valuate the claims
             # 5 Generate BatchPayment per product (Ideally per pool but the notion doesn't exist yet)
             trigger_calculation_based_on_context(
@@ -239,7 +240,9 @@ def trigger_calculation_based_on_context(
         location_id, allocated_contribution, user_id
 ):
     if work_data["payment_plans"]:
+        
         for payment_plan in work_data["payment_plans"]:
+            logger.debug(f"Starting evaluating payment plan {payment_plan.code}")
             start_date = get_start_date(end_date, payment_plan.periodicity)
             # run only when it makes sense based on periodicitiy
             if start_date is not None:
@@ -254,7 +257,11 @@ def trigger_calculation_based_on_context(
                         location_id=location_id, start_date=start_date, end_date=end_date
                     )
                     if rcr:
-                        logger.debug("conversion processed for: %s", rcr[0][0])
+                        logger.debug("conversion processed for: %s", str(rcr))
+                    else:
+                        logger.debug(f"No conversion done for {payment_plan.code}")
+                else:
+                    logger.debug(f"Calulation nof found for {payment_plan.code}")
 
 
 def update_work_data(work_data, product, start_date, end_date, allocated_contribution=None):
