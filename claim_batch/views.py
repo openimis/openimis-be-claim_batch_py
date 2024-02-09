@@ -1,4 +1,5 @@
 from django.core.exceptions import PermissionDenied
+from django.http import Http404
 
 from core.jwt_authentication import JWTAuthentication
 from report.services import ReportService
@@ -30,8 +31,12 @@ def report(request):
     report_service = ReportService(user)
     report, default = _report(request.GET)
     report_data_service = ReportDataService(user)
-    data = report_data_service.fetch(request.GET)
-    return report_service.process(report,
+    try:
+        data = report_data_service.fetch(request.GET)
+    except ValueError:
+        raise Http404(f"No data found")
+
+    result = report_service.process(report,
                                   {'data': data,
                                    'DateFrom': request.GET['dateFrom'],
                                    'DateTo': request.GET['dateTo'],
@@ -45,3 +50,4 @@ def report(request):
                                    'RunDate': request.GET['runDate']
                                    },
                                   default)
+    return result
