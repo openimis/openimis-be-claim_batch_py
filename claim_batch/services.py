@@ -505,13 +505,13 @@ _process_batch_report_data_sql3 = """
 _process_batch_report_data_with_claims_sql4 = """
     GROUP BY c."ClaimCode", c."DateClaimed", ca."OtherNames", ca."LastName", c."DateFrom", c."DateTo", i."CHFID", 
              i."OtherNames", i."LastName", c."HFID", hf."HFCode", hf."HFName", hf."AccCode", 
-             prod."ProdID", prod."ProductCode", prod."ProductName", c."Claimed",
+             prod."ProdID", prod."AccCodeRemuneration", prod."ProductCode", prod."ProductName", c."Claimed",
              d."LocationId", d."LocationName", r."LocationId", r."LocationName"
 """
 
 _process_batch_report_data_no_claims_sql4 = """
     GROUP BY hf."HFCode", hf."HFName", hf."AccCode", 
-             prod."ProdID", prod."ProductCode", prod."ProductName",
+             prod."ProdID", prod."AccCodeRemuneration", prod."ProductCode", prod."ProductName",
              d."LocationId", d."LocationName", r."LocationId", r."LocationName"
     HAVING SUM("cdetails"."RemuneratedAmount") > %(min_remunerated)s
 """
