@@ -541,6 +541,7 @@ def process_batch_report_data_with_claims(prms):
                 'hf_level': prms.get('hfLevel', ''),
                 'date_from': prms.get('dateFrom', ''),
                 'date_to': prms.get('dateTo', ''),
+                'min_remunerated': prms.get('minRemunerated', 0),
             }
         )
         try:
