@@ -268,11 +268,17 @@ def get_payment_plan_queryset(product, end_date):
 
 
 def get_claim_queryset(product, start_date, end_date):
-    return Claim.objects \
-        .filter(validity_to__isnull=True) \
-        .filter(process_stamp__range=[start_date, end_date]) \
-        .filter((Q(items__product=product) | Q(services__product=product))) \
-        .distinct()
+    # Need to split this into 2 parts because the initial distinct() causes problems later on with MSSQL
+    queryset_with_copies = Claim.objects.filter(validity_to__isnull=True) \
+                                        .filter(process_stamp__range=[start_date, end_date]) \
+                                        .filter((Q(items__product=product) | Q(services__product=product)))
+    set_with_claim_ids = set()
+    for claim in queryset_with_copies:
+        set_with_claim_ids.add(claim.id)
+
+    queryset_without_copies = Claim.objects.filter(id__in=set_with_claim_ids)
+
+    return queryset_without_copies
 
 
 def get_allocated_contribution_queryset(product, start_date, end_date):
