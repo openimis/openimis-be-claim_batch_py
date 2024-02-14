@@ -489,12 +489,12 @@ _process_batch_report_data_sql3 = """
              INNER JOIN "tblLocations" r ON r."LocationId" = d."ParentLocationId"
 
     WHERE c."ValidityTo" IS NULL
-      AND (prod."LocationId" = %(location_id)s OR %(location_id)s = 0 OR prod."LocationId" IS NULL)
-      AND (prod."ProdID" = %(prod_id)s OR %(prod_id)s = 0)
-      AND (c."RunID" = %(run_id)s OR %(run_id)s = 0)
-      AND (hf."HfID" = %(hf_id)s OR %(hf_id)s = 0)
-      AND (hf."HFLevel" = %(hf_level)s OR %(hf_level)s = '')
-      AND (coalesce(c."DateTo", c."DateFrom") BETWEEN %(date_from)s AND %(date_to)s)
+      AND (prod."LocationId" = %s OR %s = 0 OR prod."LocationId" IS NULL)
+      AND (prod."ProdID" = %s OR %s = 0)
+      AND (c."RunID" = %s OR %s = 0)
+      AND (hf."HfID" = %s OR %s = 0)
+      AND (hf."HFLevel" = %s OR %s = '')
+      AND (coalesce(c."DateTo", c."DateFrom") BETWEEN %s AND %s)
       -- TO AVOID DOUBLE COUNT WITH CAPITATION
       AND NOT (hf."HFLevel" = coalesce(prod."Level1", 'A') AND (HF."HFSublevel" = coalesce(prod."Sublevel1", HF."HFSublevel")))
       AND NOT (hf."HFLevel" = coalesce(prod."Level2", 'A') AND (HF."HFSublevel" = coalesce(prod."Sublevel2", HF."HFSublevel")))
@@ -529,11 +529,22 @@ _process_batch_report_data_no_claims_sql = \
     _process_batch_report_data_no_claims_sql4
 
 
+def _generate_batch_report_with_claims_sql_parameters(dict_params: dict):
+    # Prepares a tuple with parameters, in the correct order, since on MSSQL, pyodbc can't handle named parameters
+    params = (dict_params["location_id"], dict_params["location_id"],
+              dict_params["prod_id"], dict_params["prod_id"],
+              dict_params["run_id"], dict_params["run_id"],
+              dict_params["hf_id"], dict_params["hf_id"],
+              dict_params["hf_level"], dict_params["hf_level"],
+              dict_params["date_from"], dict_params["date_to"],)
+    return params
+
+
 def process_batch_report_data_with_claims(prms):
     with connection.cursor() as cur:
         cur.execute(
             _process_batch_report_data_with_claims_sql,
-            {
+            _generate_batch_report_with_claims_sql_parameters({
                 'location_id': prms.get('locationId', 0),
                 'prod_id': prms.get('prodId', 0),
                 'run_id': prms.get('runId', 0),
@@ -542,7 +553,7 @@ def process_batch_report_data_with_claims(prms):
                 'date_from': prms.get('dateFrom', ''),
                 'date_to': prms.get('dateTo', ''),
                 'min_remunerated': prms.get('minRemunerated', 0),
-            }
+            })
         )
         try:
             data = cur.fetchall()
