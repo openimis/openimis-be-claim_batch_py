@@ -513,7 +513,7 @@ _process_batch_report_data_no_claims_sql4 = """
     GROUP BY hf."HFCode", hf."HFName", hf."AccCode", 
              prod."ProdID", prod."AccCodeRemuneration", prod."ProductCode", prod."ProductName",
              d."LocationId", d."LocationName", r."LocationId", r."LocationName"
-    HAVING SUM("cdetails"."RemuneratedAmount") > %(min_remunerated)s
+    HAVING SUM("cdetails"."RemuneratedAmount") > %s
 """
 
 _process_batch_report_data_with_claims_sql = \
@@ -537,6 +537,18 @@ def _generate_batch_report_with_claims_sql_parameters(dict_params: dict):
               dict_params["hf_id"], dict_params["hf_id"],
               dict_params["hf_level"], dict_params["hf_level"],
               dict_params["date_from"], dict_params["date_to"],)
+    return params
+
+
+def _generate_batch_report_without_claims_sql_parameters(dict_params: dict):
+    # Prepares a tuple with parameters, in the correct order, since on MSSQL, pyodbc can't handle named parameters
+    params = (dict_params["location_id"], dict_params["location_id"],
+              dict_params["prod_id"], dict_params["prod_id"],
+              dict_params["run_id"], dict_params["run_id"],
+              dict_params["hf_id"], dict_params["hf_id"],
+              dict_params["hf_level"], dict_params["hf_level"],
+              dict_params["date_from"], dict_params["date_to"],
+              dict_params["min_remunerated"])
     return params
 
 
@@ -593,7 +605,7 @@ def process_batch_report_data(prms):
     with connection.cursor() as cur:
         cur.execute(
             _process_batch_report_data_no_claims_sql,
-            {
+            _generate_batch_report_without_claims_sql_parameters({
                 'location_id': prms.get('locationId', 0),
                 'prod_id': prms.get('prodId', 0),
                 'run_id': prms.get('runId', 0),
@@ -602,7 +614,7 @@ def process_batch_report_data(prms):
                 'date_from': prms.get('dateFrom', ''),
                 'date_to': prms.get('dateTo', ''),
                 'min_remunerated': prms.get('minRemunerated', 0)
-            }
+            })
         )
         try:
             data = cur.fetchall()
