@@ -143,7 +143,7 @@ def process_batch(audit_user_id, location_id, period, year):
 
     # Transactional stuff
     queryset = BatchRun.objects \
-        .filter(run_year=year,run_month=period,*filter_validtity())
+        .filter(run_year=year,run_month=period,*core.utils.filter_validity())
     if location_id is None:
         queryset=queryset.filter(location_id__isnull = True)
     else:

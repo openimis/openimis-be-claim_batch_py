@@ -9,7 +9,7 @@ from claim.test_helpers import (
     create_test_claimitem,
     delete_claim_with_itemsvc_dedrem_and_history,
 )
-from claim_batch.services import do_process_batch
+from claim_batch.services import do_process_batch, process_batch
 from contribution.test_helpers import create_test_payer, create_test_premium
 from contribution_plan.models import PaymentPlan
 from contribution_plan.tests.helpers import create_test_payment_plan
@@ -155,11 +155,12 @@ class BatchRunTest(TestCase):
 
         # When
         end_date = datetime.datetime(claim1.validity_from.year, claim1.validity_from.month, days_in_month)
-
-        do_process_batch(
+        # run batch (audit_user_id, location_id, period, year):
+        process_batch(
             self.user.id_for_audit,
             None,
-            end_date
+            claim1.validity_from.month,
+            claim1.validity_from.year
         )
 
         claim1.refresh_from_db()
