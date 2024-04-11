@@ -1,7 +1,8 @@
 import json
 from dataclasses import dataclass
 from core.models import User
-from core.test_helpers import create_test_interactive_user, AssertMutation
+from core.models.openimis_graphql_test_case import openIMISGraphQLTestCase
+from core.test_helpers import create_test_interactive_user
 from django.conf import settings
 from graphene_django.utils.testing import GraphQLTestCase
 from graphql_jwt.shortcuts import get_token
@@ -48,11 +49,9 @@ class DummyContext:
 
 
 
-class ClaimBactchGQLTestCase(GraphQLTestCase):
-    GRAPHQL_URL = f'/{settings.SITE_ROOT()}graphql'
+class ClaimBactchGQLTestCase(openIMISGraphQLTestCase):
     # This is required by some version of graphene but is never used. It should be set to the schema but the import
     # is shown as an error in the IDE, so leaving it as True.
-    GRAPHQL_SCHEMA = True
     admin_user = None
     ca_user = None
     ca_token = None
