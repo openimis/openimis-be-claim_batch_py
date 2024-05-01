@@ -1,7 +1,7 @@
 import calendar
 import datetime
 
-from claim.gql_mutations import validate_and_process_dedrem_claim
+from claim.services import submit_claim, validate_and_process_dedrem_claim
 from claim.models import ClaimDedRem, Claim
 from claim.test_helpers import (
     create_test_claim,
@@ -9,7 +9,7 @@ from claim.test_helpers import (
     create_test_claimitem,
     delete_claim_with_itemsvc_dedrem_and_history,
 )
-from claim_batch.services import do_process_batch
+from claim_batch.services import do_process_batch, process_batch
 from contribution.test_helpers import create_test_payer, create_test_premium
 from contribution_plan.models import PaymentPlan
 from contribution_plan.tests.helpers import create_test_payment_plan
@@ -22,12 +22,13 @@ from medical_pricelist.test_helpers import (
     add_item_to_hf_pricelist,
 )
 from policy.test_helpers import create_test_policy
-from product.models import ProductItemOrService
 from product.test_helpers import (
     create_test_product,
     create_test_product_service,
     create_test_product_item,
 )
+from product.models import ProductItemOrService
+
 
 
 _TEST_USER_NAME = "test_batch_run"
@@ -125,13 +126,17 @@ class BatchRunTest(TestCase):
         pricelist_detail2 = add_item_to_hf_pricelist(item)
 
         claim1 = create_test_claim({"insuree_id": insuree.id})
+
         service1 = create_test_claimservice(
             claim1, custom_props={"service_id": service.id, "qty_provided": 2, "price_origin": ProductItemOrService.ORIGIN_RELATIVE}
         )
         item1 = create_test_claimitem(
             claim1, "A", custom_props={"item_id": item.id, "qty_provided": 3, "price_origin": ProductItemOrService.ORIGIN_RELATIVE}
         )
-        errors = validate_and_process_dedrem_claim(claim1, self.user, True)
+        claim1.refresh_from_db()
+        errors = []
+        errors += submit_claim(claim1, self.user)
+        errors += validate_and_process_dedrem_claim(claim1, self.user, True)
         _, days_in_month = calendar.monthrange(claim1.validity_from.year, claim1.validity_from.month)
         # add process stamp for claim to not use the process_stamp with now()
         claim1.process_stamp = datetime.datetime(claim1.validity_from.year, claim1.validity_from.month, days_in_month-1)
@@ -150,11 +155,12 @@ class BatchRunTest(TestCase):
 
         # When
         end_date = datetime.datetime(claim1.validity_from.year, claim1.validity_from.month, days_in_month)
-
-        do_process_batch(
+        # run batch (audit_user_id, location_id, period, year):
+        process_batch(
             self.user.id_for_audit,
             None,
-            end_date
+            claim1.validity_from.month,
+            claim1.validity_from.year
         )
 
         claim1.refresh_from_db()
