@@ -24,7 +24,7 @@ from invoice.models import BillPayment, InvoicePayment, BillItem, InvoiceLineIte
 from location.models import HealthFacility, Location
 from product.models import Product, ProductItemOrService
 from functools import lru_cache
-
+from claim.subqueries import update_claim_valuated as claim_update_claim_valuated
 logger = logging.getLogger(__name__)
 
 
@@ -345,9 +345,12 @@ def get_product_queryset(end_date, location_id):
 
 def get_contribution_queryset(product, start_date, end_date):
     return Premium.objects \
-        .filter(validity_to__isnull=True) \
-        .filter(created_date__range=(start_date, end_date)) \
-        .filter(policy__product=product)
+        .filter(
+            validity_to__isnull=True, 
+            created_date__lte=end_date,
+            policy__effective_date__lte=end_date,
+            policy__expiry_date__gte=start_date,
+            policy__product=product)
 
 
 def get_bill_payment_queryset(product, start_date, end_date):
@@ -387,14 +390,19 @@ def get_allocated_premium(premiums, start_date, end_date):
     # go trough the contribution and find the allocated contribution
     allocated_premiums = 0
     for premium in premiums:
-        allocation_start = max(premium.policy.effective_date, start_date)
+        policy_payment_start = max(premium.policy.effective_date, premium.created_date.date())
+        allocation_start = max(policy_payment_start, start_date)
         if isinstance(allocation_start, datetime.datetime):
             allocation_start = allocation_start.date()
         allocation_stop = min(end_date, premium.policy.expiry_date)
         if isinstance(allocation_stop, datetime.datetime):
             allocation_stop = allocation_stop.date()
         allocation_diff = (allocation_stop - allocation_start).days + 1
-        policy_duration = (premium.policy.expiry_date - premium.policy.effective_date).days + 1
+        
+        policy_duration = (
+            premium.policy.expiry_date - 
+            policy_payment_start
+        ).days + (1 if policy_payment_start >= start_date else 0)
         allocated_premiums += premium.amount * allocation_diff / policy_duration
     return allocated_premiums
 
@@ -461,22 +469,12 @@ def get_start_date(end_date, periodicity):
 
 
 def update_claim_valuated(claims, batch_run, claim_based_value_subquery=0):
+    claim_update_claim_valuated(
+        claims,
+        claim_based_value_subquery=claim_based_value_subquery,
+        updates={'batch_run': batch_run}
+    )
     # 4 update the claim Total amounts if all Item and services got "valuated"
-    service_subquery = Subquery(
-        ClaimItem.objects.filter(claim=OuterRef('pk')).filter(legacy_id__isnull=True).values('claim_id').annotate(
-            item_sum=Sum('price_valuated')).values('item_sum').order_by()[:1],
-        output_field=FloatField()
-    )
-    item_subquery = Subquery(
-        ClaimService.objects.filter(claim=OuterRef('pk')).filter(legacy_id__isnull=True).values('claim_id').annotate(
-            service_sum=Sum('price_valuated')).values('service_sum').order_by()[:1],
-        output_field=FloatField()
-    )
-    claims.update(
-        status=Claim.STATUS_VALUATED,
-        batch_run=batch_run,
-        remunerated=Coalesce(service_subquery, 0) + Coalesce(item_subquery, 0) + Coalesce(claim_based_value_subquery, 0)
-    )
 
 
 def process_batch_report_data_with_claims(prms):

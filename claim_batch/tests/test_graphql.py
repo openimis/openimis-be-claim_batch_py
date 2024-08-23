@@ -14,7 +14,7 @@ import calendar
 import datetime
 import uuid
 
-from claim.services import submit_claim, validate_and_process_dedrem_claim
+from claim.services import ClaimSubmitService, processing_claim
 from claim.test_helpers import (
     create_test_claim,
     create_test_claimservice,
@@ -58,6 +58,7 @@ class ClaimBactchGQLTestCase(openIMISGraphQLTestCase):
     test_village = None
     test_insuree = None
     test_photo = None
+    submit_service = None
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
@@ -70,7 +71,7 @@ class ClaimBactchGQLTestCase(openIMISGraphQLTestCase):
         cls.admin_dist_user = create_test_interactive_user(username="testLocationDist")
         assign_user_districts(cls.admin_dist_user, ["R1D1", "R2D1", "R2D2", "R2D1", cls.test_village.parent.parent.code])
         cls.admin_dist_token = get_token(cls.admin_dist_user, DummyContext(user=cls.admin_dist_user))
-
+        cls.submit_service = ClaimSubmitService(cls.admin_dist_user)
         insuree = create_test_insuree()
         service = create_test_service("B", custom_props={"name": "test_simple_batch"})
         item = create_test_item("B", custom_props={"name": "test_simple_batch"})
@@ -140,8 +141,9 @@ class ClaimBactchGQLTestCase(openIMISGraphQLTestCase):
             claim1, item.type, custom_props={"item_id": item.id, "qty_provided": 3, "price_origin": ProductItemOrService.ORIGIN_RELATIVE}
         )
         claim1.refresh_from_db()
-        submit_claim(claim1, cls.admin_user)
-        validate_and_process_dedrem_claim(claim1, cls.admin_user, True)
+        
+        cls.submit_service.submit_claim(claim1, cls.admin_user)
+        processing_claim(claim1, cls.admin_user, True)
         _, days_in_month = calendar.monthrange(claim1.validity_from.year, claim1.validity_from.month)
         # add process stamp for claim to not use the process_stamp with now()
         claim1.process_stamp = datetime.datetime(claim1.validity_from.year, claim1.validity_from.month, days_in_month-1)

@@ -1,7 +1,7 @@
 import calendar
 import datetime
 
-from claim.services import submit_claim, validate_and_process_dedrem_claim
+from claim.services import ClaimSubmitService, processing_claim
 from claim.models import ClaimDedRem, Claim
 from claim.test_helpers import (
     create_test_claim,
@@ -29,29 +29,17 @@ from product.test_helpers import (
 )
 from product.models import ProductItemOrService
 
+from core.test_helpers import create_test_interactive_user
 
-
-_TEST_USER_NAME = "test_batch_run"
-_TEST_USER_PASSWORD = "test_batch_run"
-_TEST_DATA_USER = {
-    "username": _TEST_USER_NAME,
-    "last_name": _TEST_USER_NAME,
-    "password": _TEST_USER_PASSWORD,
-    "other_names": _TEST_USER_NAME,
-    "user_types": "INTERACTIVE",
-    "language": "en",
-    "roles": [1, 5, 9],
-}
 
 
 class BatchRunTest(TestCase):
     def setUp(self) -> None:
         super(BatchRunTest, self).setUp()
-        i_user, i_user_created = create_or_update_interactive_user(
-            user_id=None, data=_TEST_DATA_USER, audit_user_id=999, connected=False)
-        user, user_created = create_or_update_core_user(
-            user_uuid=None, username=_TEST_DATA_USER["username"], i_user=i_user)
+        user = create_test_interactive_user(username="testbatchrun")
+
         self.user = user
+        self.submit_service = ClaimSubmitService(self.user)
 
     def test_simple_batch(self):
         """
@@ -135,8 +123,9 @@ class BatchRunTest(TestCase):
         )
         claim1.refresh_from_db()
         errors = []
-        errors += submit_claim(claim1, self.user)
-        errors += validate_and_process_dedrem_claim(claim1, self.user, True)
+        subm_claim, error = self.submit_service.submit_claim(claim1, self.user)
+        errors += error
+        errors += processing_claim(claim1, self.user, True)
         _, days_in_month = calendar.monthrange(claim1.validity_from.year, claim1.validity_from.month)
         # add process stamp for claim to not use the process_stamp with now()
         claim1.process_stamp = datetime.datetime(claim1.validity_from.year, claim1.validity_from.month, days_in_month-1)
