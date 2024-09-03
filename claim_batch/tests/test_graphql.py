@@ -59,6 +59,8 @@ class ClaimBactchGQLTestCase(openIMISGraphQLTestCase):
     test_insuree = None
     test_photo = None
     submit_service = None
+    year = None
+    month = None
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
@@ -147,28 +149,31 @@ class ClaimBactchGQLTestCase(openIMISGraphQLTestCase):
         _, days_in_month = calendar.monthrange(claim1.validity_from.year, claim1.validity_from.month)
         # add process stamp for claim to not use the process_stamp with now()
         claim1.process_stamp = datetime.datetime(claim1.validity_from.year, claim1.validity_from.month, days_in_month-1)
+        cls.year = claim1.validity_from.year
+        cls.month = claim1.validity_from.month
         claim1.save()
         
         
 
     def test_query_insuree_number_validity(self):
         response = self.query(
-            '''
+            f'''
 
-    mutation {
+    mutation {{
       processBatch(
-        input: {
+        input: {{
           clientMutationId: "82365744-dc14-456e-bac6-109925bf8c7f"
           clientMutationLabel: "Évaluation par lots - National, April 2019"
           
-          month: 4
-    year: 2019
-        }
-      ) {
+          month: {self.month}
+          year: {self.year}
+        }}
+      ) {{
         clientMutationId
         internalId
-      }
-    }
+        }}
+      
+    }}
             ''',
             headers={"HTTP_AUTHORIZATION": f"Bearer {self.admin_token}"},
         )

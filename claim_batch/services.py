@@ -24,7 +24,10 @@ from invoice.models import BillPayment, InvoicePayment, BillItem, InvoiceLineIte
 from location.models import HealthFacility, Location
 from product.models import Product, ProductItemOrService
 from functools import lru_cache
-from claim.subqueries import update_claim_valuated as claim_update_claim_valuated
+from claim.subqueries import (
+    update_claim_valuated as claim_update_claim_valuated,
+    update_claim_indexed_remunerated as claim_update_claim_indexed_remunerated
+)
 logger = logging.getLogger(__name__)
 
 
@@ -295,9 +298,10 @@ def get_payment_plan_queryset(product, end_date):
 
 def get_items_queryset(product, start_date, end_date):
     return ClaimItem.objects \
-        .filter(validity_to__isnull=True) \
         .filter(claim__process_stamp__lte=end_date) \
-        .filter(claim__process_stamp__gte=start_date) \
+        .filter(claim__status=Claim.STATUS_PROCESSED) \
+        .filter(claim__validity_to__isnull=True) \
+        .filter(validity_to__isnull=True) \
         .filter(product=product) \
         .select_related('claim__health_facility') \
         .order_by('claim__health_facility').order_by('claim')
@@ -306,7 +310,8 @@ def get_items_queryset(product, start_date, end_date):
 def get_services_queryset(product, start_date, end_date):
     return ClaimService.objects \
         .filter(claim__process_stamp__lte=end_date) \
-        .filter(claim__process_stamp__gte=start_date) \
+        .filter(claim__status=Claim.STATUS_PROCESSED) \
+        .filter(claim__validity_to__isnull=True) \
         .filter(validity_to__isnull=True) \
         .filter(product=product) \
         .select_related('claim__health_facility') \
@@ -315,12 +320,12 @@ def get_services_queryset(product, start_date, end_date):
 
 def get_claim_queryset(product, start_date, end_date):
     return Claim.objects \
-        .filter(validity_from__lte=end_date) \
-        .filter(validity_from__gte=start_date) \
-        .filter(validity_to__isnull=True) \
-        .filter(process_stamp__lte=end_date) \
-        .filter((Q(items__product=product) | Q(services__product=product))) \
-        .distinct()
+        .filter(
+            Q(Q(items__product=product) | Q(services__product=product)),
+            process_stamp__lte=end_date,
+            status=Claim.STATUS_PROCESSED,
+            validity_to__isnull=True 
+        ) 
 
 
 def get_allocated_contribution_queryset(product, start_date, end_date):
@@ -358,27 +363,31 @@ def get_bill_payment_queryset(product, start_date, end_date):
 
     
     qs = BillPayment.objects.filter(is_deleted=False)\
-        .filter(date_created__gte=start_date, date_created__lt=end_date)\
-        .filter(bill__line_items_bill__line_type=get_content_type_for_model(Premium),
-                bill__line_items_bill__line_id__in=Subquery(Premium.objects
-                        .filter(validity_to__isnull=True)
-                        .filter(policy__product=product)
-                        .annotate(as_str=Cast('id', TextField())).values('as_str')
-                        
-                    ))
+        .filter(
+            date_created__gte=start_date,
+            date_created__lt=end_date,
+            bill__line_items_bill__line_type=get_content_type_for_model(Premium),
+            bill__line_items_bill__line_id__in=Subquery(
+                Premium.objects.filter(validity_to__isnull=True)
+                .filter(policy__product=product)
+                .annotate(as_str=Cast('id', TextField())).values('as_str')
+            )
+    )
     return qs
 
 
 def get_invoice_payment_queryset(product, start_date, end_date):
-    
     qs = InvoicePayment.objects.filter(is_deleted=False)\
-    .filter(date_created__gte=start_date, date_created__lt=end_date)\
-    .filter(invoice__line_items__line_type=get_content_type_for_model(Premium),
-                invoice__line_items__line_id__in=Subquery(Premium.objects
-                        .filter(validity_to__isnull=True)
-                        .filter(policy__product=product)
-                        .annotate(as_str=Cast('id', TextField())).values('as_str')
-                    ))
+        .filter(
+            date_created__gte=start_date,
+            date_created__lt=end_date,
+            invoice__line_items__line_type=get_content_type_for_model(Premium),
+            invoice__line_items__line_id__in=Subquery(
+                Premium.objects.filter(validity_to__isnull=True)
+                .filter(policy__product=product)
+                .annotate(as_str=Cast('id', TextField())).values('as_str')
+            )
+    )
     return qs
 
             
@@ -471,6 +480,16 @@ def get_start_date(end_date, periodicity):
 def update_claim_valuated(claims, batch_run, claim_based_value_subquery=0):
     claim_update_claim_valuated(
         claims,
+        claim_based_value_subquery=claim_based_value_subquery,
+        updates={'batch_run': batch_run}
+    )
+    # 4 update the claim Total amounts if all Item and services got "valuated"
+
+
+def update_claim_indexed_remunerated(claims, batch_run, index=1, claim_based_value_subquery=0):
+    claim_update_claim_indexed_remunerated(
+        claims,
+        ratio=index,
         claim_based_value_subquery=claim_based_value_subquery,
         updates={'batch_run': batch_run}
     )

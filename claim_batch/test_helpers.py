@@ -2,6 +2,10 @@ from claim_batch.models import RelativeDistribution
 
 
 def create_test_rel_distr_range(product_id, dist_type, care_type, percent, custom_props=None):
+    if custom_props is None:
+        custom_props = {}
+    else:
+        custom_props = {k: v for k, v in custom_props.items() if hasattr(RelativeDistribution, k)}
     if dist_type == 1:
         r = range(1, 13)
     elif dist_type == 4:
@@ -18,6 +22,7 @@ def create_test_rel_distr_range(product_id, dist_type, care_type, percent, custo
                 "percent": percent,
                 "validity_from": "2019-06-01",
                 "audit_user_id": -1,
-                **(custom_props if custom_props else {})
+                **custom_props
             }
         )
+

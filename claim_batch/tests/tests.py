@@ -10,6 +10,7 @@ from claim.test_helpers import (
     delete_claim_with_itemsvc_dedrem_and_history,
 )
 from claim_batch.services import do_process_batch, process_batch
+from claim_batch.models import BatchRun
 from contribution.test_helpers import create_test_payer, create_test_premium
 from contribution_plan.models import PaymentPlan
 from contribution_plan.tests.helpers import create_test_payment_plan
@@ -30,7 +31,6 @@ from product.test_helpers import (
 from product.models import ProductItemOrService
 
 from core.test_helpers import create_test_interactive_user
-
 
 
 class BatchRunTest(TestCase):
@@ -105,7 +105,15 @@ class BatchRunTest(TestCase):
             item,
             custom_props={"price_origin": ProductItemOrService.ORIGIN_RELATIVE},
         )
-        policy = create_test_policy(product, insuree, link=True)
+        
+        now = datetime.datetime.now()
+        policy = create_test_policy(product, insuree, link=True, custom_props={
+            'expiry_date': datetime.date(now.year, 12, 31),
+            'enroll_date': datetime.date(now.year, 1, 1),
+            'effective_date': datetime.date(now.year, 1, 1),
+            'start_date': datetime.date(now.year, 1, 1),
+            })
+        
         payer = create_test_payer()
         premium = create_test_premium(
             policy_id=policy.id, custom_props={"payer_id": payer.id}
@@ -113,7 +121,8 @@ class BatchRunTest(TestCase):
         pricelist_detail1 = add_service_to_hf_pricelist(service)
         pricelist_detail2 = add_item_to_hf_pricelist(item)
 
-        claim1 = create_test_claim({"insuree_id": insuree.id})
+        claim1 = create_test_claim({"insuree_id": insuree.id},
+                                   )
 
         service1 = create_test_claimservice(
             claim1, custom_props={"service_id": service.id, "qty_provided": 2, "price_origin": ProductItemOrService.ORIGIN_RELATIVE}
@@ -145,9 +154,11 @@ class BatchRunTest(TestCase):
         # When
         end_date = datetime.datetime(claim1.validity_from.year, claim1.validity_from.month, days_in_month)
         # run batch (audit_user_id, location_id, period, year):
+        Claim.objects.filter(batch_run_id__isnull=False).update(batch_run_id=None)
+        BatchRun.objects.all().delete()
         process_batch(
             self.user.id_for_audit,
-            None,
+            product.location_id,
             claim1.validity_from.month,
             claim1.validity_from.year
         )
@@ -160,18 +171,3 @@ class BatchRunTest(TestCase):
 
         # tearDown
         # dedrem.delete() # already done if the test passed
-        premium.delete()
-        payer.delete()
-        delete_claim_with_itemsvc_dedrem_and_history(claim1)
-        policy.insuree_policies.first().delete()
-        policy.delete()
-        product_item.delete()
-        product_service.delete()
-        pricelist_detail1.delete()
-        pricelist_detail2.delete()
-        service.delete()
-        item.delete()
-        product.relativeindex_set.all().delete()
-        product.relative_distributions.all().delete()
-        PaymentPlan.objects.filter(id=payment_plan.id).delete()
-        product.delete()
