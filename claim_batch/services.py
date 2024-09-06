@@ -399,7 +399,10 @@ def get_allocated_premium(premiums, start_date, end_date):
     # go trough the contribution and find the allocated contribution
     allocated_premiums = 0
     for premium in premiums:
-        policy_payment_start = max(premium.policy.effective_date, premium.created_date.date())
+        # FIXME migration contribution 0008 created_date from date to datetime 
+        # not working in PSQL for no apparent reason, hence this work arround:
+        created_date = premium.created_date.date() if hasattr(premium.created_date, 'date') else premium.created_date
+        policy_payment_start = max(premium.policy.effective_date, created_date)
         allocation_start = max(policy_payment_start, start_date)
         if isinstance(allocation_start, datetime.datetime):
             allocation_start = allocation_start.date()
