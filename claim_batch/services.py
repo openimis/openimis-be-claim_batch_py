@@ -224,12 +224,12 @@ def do_process_batch(audit_user_id, location_id, end_date):
             # valuate the claims
             # 5 Generate BatchPayment per product (Ideally per pool but the notion doesn't exist yet)
             trigger_calculation_based_on_context(
-                "BatchValuate", work_data, end_date, product, location_id, allocated_contribution, audit_user_id
+                "BatchValuate", work_data, Claim.STATUS_PROCESSED, end_date, product, location_id, allocated_contribution, audit_user_id
             )
             # 5.1 filter a calculation valid for batchRun with context BatchPayment (got via 0.2)
             # 54.2 Execute the converter per product/batch run/claim (not claims)
             trigger_calculation_based_on_context(
-                "BatchPayment", work_data, end_date, product, location_id, allocated_contribution, audit_user_id
+                "BatchPayment", work_data, Claim.STATUS_VALUATED, end_date, product, location_id, allocated_contribution, audit_user_id
             )
             # save the batch run into db
             logger.debug("do_process_batch created run: %s", created_run.id)
@@ -237,9 +237,15 @@ def do_process_batch(audit_user_id, location_id, end_date):
         logger.info("no product found in  %s for %s/%s", location_id, period, year)
     return created_run
 
+def add_status_filter(work_data, status):
+    ret = work_data.copy()
+    ret['claims'] = work_data['claims'].filter(status=status)
+    ret['items'] = work_data['items'].filter(claim_status=status)
+    ret['services'] = work_data['services'].filter(claim_status=status)
+    return ret
 
 def trigger_calculation_based_on_context(
-        context, work_data, end_date, product,
+        context, work_data, status, end_date, product,
         location_id, allocated_contribution, user_id
 ):
     if work_data["payment_plans"]:
@@ -250,7 +256,7 @@ def trigger_calculation_based_on_context(
             # run only when it makes sense based on periodicitiy
             if start_date is not None:
                 allocated_contribution, work_data = update_work_data(
-                    work_data, product, start_date, end_date, allocated_contribution
+                    work_data, product, status, start_date, end_date, allocated_contribution
                 )
                 calculation = get_calculation_object(payment_plan.calculation)
                 if calculation is not None:
@@ -267,13 +273,13 @@ def trigger_calculation_based_on_context(
                     logger.debug(f"Calulation nof found for {payment_plan.code}")
 
 
-def update_work_data(work_data, product, start_date, end_date, allocated_contribution=None):
+def update_work_data(work_data, product, status, start_date, end_date, allocated_contribution=None):
     work_data["start_date"] = start_date
 # 1.3 generate queryset
-    work_data["items"] = get_items_queryset(product, start_date, end_date)
-    work_data["services"] = get_services_queryset(product, start_date, end_date)
+    work_data["items"] = get_items_queryset(product, status, work_data['created_run'], start_date, end_date)
+    work_data["services"] = get_services_queryset(product, status, work_data['created_run'], start_date, end_date)
     work_data["contributions"] = get_contribution_queryset(product, start_date, end_date)
-    work_data['claims'] = get_claim_queryset(product, start_date, end_date)
+    work_data['claims'] = get_claim_queryset(product, status, work_data['created_run'],start_date, end_date)
     work_data['bill_payments'] = get_bill_payment_queryset(product, start_date, end_date)
     
     work_data['invoice_payments'] = get_invoice_payment_queryset(product, start_date, end_date)
@@ -296,36 +302,40 @@ def get_payment_plan_queryset(product, end_date):
     ).filter(is_deleted=False)
 
 
-def get_items_queryset(product, start_date, end_date):
-    return ClaimItem.objects \
-        .filter(claim__process_stamp__lte=end_date) \
-        .filter(claim__status=Claim.STATUS_PROCESSED) \
-        .filter(claim__validity_to__isnull=True) \
-        .filter(validity_to__isnull=True) \
-        .filter(product=product) \
-        .select_related('claim__health_facility') \
-        .order_by('claim__health_facility').order_by('claim')
+def get_items_queryset(product, status, batch_run, start_date, end_date):
+    return ClaimItem.objects.filter(
+        Q(claim__batch_run__isnull=True) | Q(claim__batch_run=batch_run),
+        claim__status=status,
+        claim__process_stamp__lte=end_date,
+        claim__validity_to__isnull=True,
+        validity_to__isnull=True,
+        product=product
+    ).select_related(
+        'claim__health_facility'
+    ).order_by('claim__health_facility').order_by('claim')
 
 
-def get_services_queryset(product, start_date, end_date):
-    return ClaimService.objects \
-        .filter(claim__process_stamp__lte=end_date) \
-        .filter(claim__status=Claim.STATUS_PROCESSED) \
-        .filter(claim__validity_to__isnull=True) \
-        .filter(validity_to__isnull=True) \
-        .filter(product=product) \
-        .select_related('claim__health_facility') \
-        .order_by('claim__health_facility').order_by('claim')
+def get_services_queryset(product, status, batch_run, start_date, end_date):
+    return ClaimService.objects.filter(
+        Q(claim__batch_run__isnull=True) | Q(claim__batch_run=batch_run),
+        claim__status=status,
+        claim__process_stamp__lte=end_date,
+        claim__validity_to__isnull=True,
+        validity_to__isnull=True,
+        product=product
+    ).select_related(
+        'claim__health_facility'
+    ).order_by('claim__health_facility').order_by('claim')
 
 
-def get_claim_queryset(product, start_date, end_date):
-    return Claim.objects \
-        .filter(
-            Q(Q(items__product=product) | Q(services__product=product)),
-            process_stamp__lte=end_date,
-            status=Claim.STATUS_PROCESSED,
-            validity_to__isnull=True 
-        ) 
+def get_claim_queryset(product, status, batch_run, start_date, end_date):
+    return Claim.objects.filter(
+        Q(items__product=product) | Q(services__product=product),
+        Q(batch_run__isnull=True) | Q(batch_run=batch_run),
+        status=status,
+        process_stamp__lte=end_date,
+        validity_to__isnull=True
+    ) 
 
 
 def get_allocated_contribution_queryset(product, start_date, end_date):
