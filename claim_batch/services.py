@@ -288,12 +288,12 @@ def update_work_data(work_data, product, start_date, end_date, allocated_contrib
 
 
 def get_payment_plan_queryset(product, end_date):
-    return PaymentPlan.objects \
-        .filter(date_valid_to__gte=end_date) \
-        .filter(date_valid_from__lte=end_date) \
-        .filter(benefit_plan_id=product.id) \
-        .filter(benefit_plan_type=product_content_type()) \
-        .filter(is_deleted=False)
+    return PaymentPlan.objects.filter(
+        Q(date_valid_to__isnull=True) | Q(date_valid_to__gte=end_date),
+        date_valid_from__lte=end_date,
+        benefit_plan_id=product.id,
+        benefit_plan_type=product_content_type()
+    ).filter(is_deleted=False)
 
 
 def get_items_queryset(product, start_date, end_date):
