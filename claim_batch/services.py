@@ -224,12 +224,26 @@ def do_process_batch(audit_user_id, location_id, end_date):
             # valuate the claims
             # 5 Generate BatchPayment per product (Ideally per pool but the notion doesn't exist yet)
             trigger_calculation_based_on_context(
-                "BatchValuate", work_data, Claim.STATUS_PROCESSED, end_date, product, location_id, allocated_contribution, audit_user_id
+                "BatchValuate",
+                work_data,
+                Claim.STATUS_PROCESSED,
+                end_date,
+                product,
+                location_id,
+                allocated_contribution,
+                audit_user_id
             )
             # 5.1 filter a calculation valid for batchRun with context BatchPayment (got via 0.2)
             # 54.2 Execute the converter per product/batch run/claim (not claims)
             trigger_calculation_based_on_context(
-                "BatchPayment", work_data, Claim.STATUS_VALUATED, end_date, product, location_id, allocated_contribution, audit_user_id
+                "BatchPayment",
+                work_data,
+                Claim.STATUS_VALUATED,
+                end_date,
+                product,
+                location_id,
+                allocated_contribution,
+                audit_user_id
             )
             # save the batch run into db
             logger.debug("do_process_batch created run: %s", created_run.id)
@@ -260,17 +274,28 @@ def trigger_calculation_based_on_context(
                 )
                 calculation = get_calculation_object(payment_plan.calculation)
                 if calculation is not None:
-                    rcr = calculation.calculate_if_active_for_object(
-                        payment_plan, context=context,
-                        work_data=work_data, audit_user_id=user_id,
-                        location_id=location_id, start_date=start_date, end_date=end_date
-                    )
-                    if rcr:
-                        logger.debug("conversion processed for: %s", str(rcr))
-                    else:
-                        logger.debug(f"No conversion done for {payment_plan.code}")
+                    try:
+                        rcr = calculation.calculate_if_active_for_object(
+                            payment_plan, context=context,
+                            work_data=work_data, audit_user_id=user_id,
+                            location_id=location_id, start_date=start_date, end_date=end_date
+                        )
+                        if rcr:
+                            logger.debug("conversion processed for: %s", str(rcr))
+                        else:
+                            logger.debug(f"No conversion done for {payment_plan.code}")
+                    except Exception as e:
+                        message = _(
+                            "Batch run %s failed %s: %s" % (
+                                calculation.calculation_rule_name,
+                                context,
+                                str(e)
+                            )
+                        )
+                        logger.debug(message)
+                        raise Exception(message)
                 else:
-                    logger.debug(f"Calulation nof found for {payment_plan.code}")
+                    logger.debug(f"Calulation not found for {payment_plan.code}")
 
 
 def update_work_data(work_data, product, status, start_date, end_date, allocated_contribution=None):
@@ -303,39 +328,48 @@ def get_payment_plan_queryset(product, end_date):
 
 
 def get_items_queryset(product, status, batch_run, start_date, end_date):
-    return ClaimItem.objects.filter(
+    subquery = ClaimItem.objects.filter(
         Q(claim__batch_run__isnull=True) | Q(claim__batch_run=batch_run),
         claim__status=status,
         claim__process_stamp__lte=end_date,
         claim__validity_to__isnull=True,
         validity_to__isnull=True,
         product=product
+    ).distinct().values('id')
+    
+    return ClaimItem.objects.filter(
+        id__in=Subquery(subquery)
     ).select_related(
         'claim__health_facility'
     ).order_by('claim__health_facility').order_by('claim')
 
 
 def get_services_queryset(product, status, batch_run, start_date, end_date):
-    return ClaimService.objects.filter(
+    subquery = ClaimService.objects.filter(
         Q(claim__batch_run__isnull=True) | Q(claim__batch_run=batch_run),
         claim__status=status,
         claim__process_stamp__lte=end_date,
         claim__validity_to__isnull=True,
         validity_to__isnull=True,
         product=product
+    ).distinct().values('id')
+    return ClaimService.objects.filter(
+        id__in=Subquery(subquery)
     ).select_related(
         'claim__health_facility'
     ).order_by('claim__health_facility').order_by('claim')
 
 
 def get_claim_queryset(product, status, batch_run, start_date, end_date):
-    return Claim.objects.filter(
+    subquery = Claim.objects.filter(
         Q(items__product=product) | Q(services__product=product),
         Q(batch_run__isnull=True) | Q(batch_run=batch_run),
         status=status,
         process_stamp__lte=end_date,
         validity_to__isnull=True
-    ) 
+    ).distinct().values('id')
+    return Claim.objects.filter(id__in=Subquery(subquery))
+    
 
 
 def get_allocated_contribution_queryset(product, start_date, end_date):
