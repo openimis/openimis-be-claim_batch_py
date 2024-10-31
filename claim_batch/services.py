@@ -156,7 +156,10 @@ def process_batch(audit_user_id, location_id, period, year):
     if already_run_batch:
         return [str(ProcessBatchSubmitError(2))]
     _, days_in_month = calendar.monthrange(year, period)
-    end_date = datetime.datetime(year, period, days_in_month)
+    end_date = (
+        datetime.datetime(year, period, days_in_month)
+        + datetime.timedelta(days=1)
+    )
     now = datetime.datetime.now()
     # TODO - double check this condition
     # if end_date < now:
