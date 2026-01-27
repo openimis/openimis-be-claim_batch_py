@@ -367,28 +367,31 @@ def get_claim_queryset(product, status, batch_run, start_date, end_date):
     subquery = Claim.objects.filter(
         Q(items__product=product) | Q(services__product=product),
         Q(batch_run__isnull=True) | Q(batch_run=batch_run),
+        Q(Q(date_to__lt=end_date) | (Q(date_to__isnull=True) & Q(date_from__lt=end_date))),
+        *Claim.filter_validity(),
         status=status,
-        process_stamp__lt=datetime.datetime.now(),
-        validity_to__isnull=True
+        process_stamp__is_null=False,
     ).distinct().values('id')
     return Claim.objects.filter(id__in=Subquery(subquery))
     
 
 
 def get_allocated_contribution_queryset(product, start_date, end_date):
-    return Premium.objects \
-        .filter(policy__effective_date__lte=end_date) \
-        .filter(policy__expiry_date__gte=start_date) \
-        .filter(validity_to__isnull=True) \
-        .filter(policy__product=product) \
-        .select_related('policy')
+    return Premium.objects.filter(
+        *Claim.filter_validity(),
+        policy__effective_date__lte=end_date,
+        policy__expiry_date__gte=start_date,
+        policy__product=product
+        ).select_related('policy')
 
 
 def get_product_queryset(end_date, location_id):
-    queryset = Product.objects \
-        .filter(validity_to__isnull=True) \
-        .filter(date_from__lte=end_date) \
-        .filter(Q(date_to__gte=end_date) | Q(date_to__isnull=True))
+    queryset = Product.objects.filter(
+        Q(date_to__gte=end_date) | Q(date_to__isnull=True),
+        *Product.filter_validity(),
+       date_from__lte=end_date,
+        
+    )
     if location_id is not None:
         return queryset.filter(location_id=location_id)
     else:
