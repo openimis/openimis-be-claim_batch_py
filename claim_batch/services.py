@@ -370,7 +370,7 @@ def get_claim_queryset(product, status, batch_run, start_date, end_date):
         Q(Q(date_to__lt=end_date) | (Q(date_to__isnull=True) & Q(date_from__lt=end_date))),
         *Claim.filter_validity(),
         status=status,
-        process_stamp__is_null=False,
+        process_stamp__isnull=False,
     ).distinct().values('id')
     return Claim.objects.filter(id__in=Subquery(subquery))
     
