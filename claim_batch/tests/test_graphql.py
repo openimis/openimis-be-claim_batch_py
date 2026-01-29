@@ -130,8 +130,8 @@ class ClaimBactchGQLTestCase(openIMISGraphQLTestCase):
             policy_id=policy.id, custom_props={"payer_id": payer.id}
         )
         claim1 = create_test_claim({"insuree_id": insuree.id})
-        pricelist_detail1 = add_service_to_hf_pricelist(service, claim1.health_facility_id)
-        pricelist_detail2 = add_item_to_hf_pricelist(item, claim1.health_facility_id)
+        pricelist_detail1 = add_service_to_hf_pricelist(service, claim1.health_facility)
+        pricelist_detail2 = add_item_to_hf_pricelist(item, claim1.health_facility)
         
         service1 = create_test_claimservice(
             claim1, custom_props={"service_id": service.id, "qty_provided": 2, "price_origin": ProductItemOrService.ORIGIN_RELATIVE}
