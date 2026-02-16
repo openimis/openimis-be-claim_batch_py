@@ -174,7 +174,7 @@ class ClaimBactchGQLTestCase(openIMISGraphQLTestCase):
             headers={"HTTP_AUTHORIZATION": f"Bearer {self.admin_token}"},
         )
 
-        self.assertEquals(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertResponseNoErrors(response)
         #TODO mutation should be found 
         #AssertMutation(self,uuid.UUID("82365744-dc14-456e-bac6-109925bf8c7f"), self.admin_dist_token )
