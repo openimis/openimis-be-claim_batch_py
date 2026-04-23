@@ -25,4 +25,3 @@ def create_test_rel_distr_range(product_id, dist_type, care_type, percent, custo
                 **custom_props
             }
         )
-

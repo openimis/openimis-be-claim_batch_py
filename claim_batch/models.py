@@ -5,7 +5,7 @@ from core import models as core_models
 from django.db import models
 from django.utils.translation import gettext_lazy
 from location import models as location_models
-from location.models import HealthFacility, Location
+from location.models import HealthFacility
 from product import models as product_models
 from product.models import Product
 
@@ -83,7 +83,6 @@ class RelativeDistribution(models.Model):
     class Meta:
         managed = True
         db_table = 'tblRelDistr'
-
 
     CARE_TYPE_OUT_PATIENT = "O"
     CARE_TYPE_IN_PATIENT = "I"
@@ -179,4 +178,3 @@ class CapitationPayment(core_models.VersionedModel):
 
     class Meta:
         db_table = 'tblCapitationPayment'
-

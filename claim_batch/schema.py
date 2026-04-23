@@ -14,6 +14,7 @@ from .apps import ClaimBatchConfig
 from django.utils.translation import gettext as _
 from django.conf import settings
 
+
 class BatchRunGQLType(DjangoObjectType):
     class Meta:
         model = BatchRun
