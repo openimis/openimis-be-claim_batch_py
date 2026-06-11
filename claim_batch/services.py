@@ -1,6 +1,5 @@
 import calendar
 import datetime
-import uuid
 import logging
 import pandas as pd
 from django.contrib.admin.options import get_content_type_for_model
@@ -8,21 +7,19 @@ from django.contrib.contenttypes.models import ContentType
 
 import core
 
-from datetime import date
-from django.db import connection, transaction, DatabaseError
-from django.db.models import Value, F, Sum, Q, Prefetch, Count, Subquery, OuterRef, FloatField, TextField
-from django.db.models.functions import Coalesce, ExtractMonth, ExtractYear, Cast
+from django.db import connection, transaction
+from django.db.models import Value, F, Q, Subquery, TextField
+from django.db.models.functions import Coalesce, Cast
 from django.utils.translation import gettext as _
 
-from calculation.services import run_calculation_rules, get_calculation_object
-from claim.models import ClaimItem, Claim, ClaimService, ClaimDetail
-from claim_batch.models import BatchRun, RelativeIndex, RelativeDistribution
+from calculation.services import get_calculation_object
+from claim.models import ClaimItem, Claim, ClaimService
+from claim_batch.models import BatchRun, RelativeIndex
 from contribution.models import Premium
 from contribution_plan.models import PaymentPlan
-from core.signals import *
-from invoice.models import BillPayment, InvoicePayment, BillItem, InvoiceLineItem
+from invoice.models import BillPayment, InvoicePayment
 from location.models import HealthFacility, Location
-from product.models import Product, ProductItemOrService
+from product.models import Product
 from functools import lru_cache
 from claim.subqueries import (
     update_claim_valuated as claim_update_claim_valuated,
@@ -112,7 +109,8 @@ class ProcessBatchService(object):
                 .distinct()
             )
 
-        region_id, district_id = _get_capitation_region_and_district(submit.location_id)
+        region_id, district_id = _get_capitation_region_and_district(
+            submit.location_id)
         for product in set(map(lambda x: x['product_id'], capitation_payment_products)):
             params = {
                 'region_id': region_id,
@@ -121,11 +119,13 @@ class ProcessBatchService(object):
                 'year': submit.year,
                 'month': submit.month,
             }
-            is_report_data_available = get_commision_payment_report_data(params)
+            is_report_data_available = get_commision_payment_report_data(
+                params)
             if not is_report_data_available:
                 process_capitation_payment_data(params)
             else:
-                logger.debug(F"Capitation payment data for {params} already exists")
+                logger.debug(
+                    F"Capitation payment data for {params} already exists")
 
     @classmethod
     def batch_run_already_executed(cls, year, month, location_id):
@@ -146,11 +146,11 @@ def process_batch(audit_user_id, location_id, period, year):
 
     # Transactional stuff
     queryset = BatchRun.objects \
-        .filter(run_year=year,run_month=period,*core.utils.filter_validity())
+        .filter(run_year=year, run_month=period, *core.utils.filter_validity())
     if location_id is None:
-        queryset=queryset.filter(location_id__isnull = True)
+        queryset = queryset.filter(location_id__isnull=True)
     else:
-        queryset=queryset.filter(location__id = location_id)
+        queryset = queryset.filter(location__id=location_id)
 
     already_run_batch = queryset.values("id").first()
     if already_run_batch:
@@ -160,11 +160,10 @@ def process_batch(audit_user_id, location_id, period, year):
         datetime.datetime(year, period, days_in_month)
         + datetime.timedelta(days=1)
     )
-    now = datetime.datetime.now()
     # TODO - double check this condition
     # if end_date < now:
     #    return [str(ProcessBatchSubmitError(3))]
-    ## TODO create message "Batch cannot be run before the end of the selected period"
+    # TODO create message "Batch cannot be run before the end of the selected period"
     try:
         do_process_batch(audit_user_id, location_id, end_date)
     except (KeyboardInterrupt, SystemExit):
@@ -194,23 +193,21 @@ def _get_capitation_region_and_district(location_id):
 
 
 def do_process_batch(audit_user_id, location_id, end_date):
-    processed_ids = set()  # As we update claims, we add the claims not in relative pricing and then update the status
+    # As we update claims, we add the claims not in relative pricing and then update the status
     period = end_date.month
     year = end_date.year
-    logger.debug("do_process_batch location %s for %s/%s", location_id, period, year)
+    logger.debug("do_process_batch location %s for %s/%s",
+                 location_id, period, year)
 
     from core.utils import TimeUtils
     created_run = BatchRun.objects.create(location_id=location_id, run_year=year, run_month=period,
                                           run_date=TimeUtils.now(), audit_user_id=audit_user_id,
                                           validity_from=TimeUtils.now())
-    logger.debug(f"do_process_batch created run: {created_run.id}" )
+    logger.debug(f"do_process_batch created run: {created_run.id}")
 
     # 0 prepare the batch run :  does it really make sense
     # per location ? (Ideally per pool but the notion doesn't exist yet)
     # 0.1 get all product concerned, all product that have are configured for the location
-    # init start dates
-    start_date = None
-
     # period_quarter = period - 2 if period % 3 == 0 else 0
     # period_sem = period - 5 if period % 6 == 0 else 0
 
@@ -218,12 +215,16 @@ def do_process_batch(audit_user_id, location_id, end_date):
     # 1 per product (Ideally per pool but the notion doesn't exist yet)
     if products:
         for product in products:
-            logger.debug(f"do_process_batch creating batch run process for product {product.code}-{product.name}")
-            work_data = {"created_run": created_run, "product": product, "end_date": end_date}
+            logger.debug(
+                f"do_process_batch creating batch run process for product {product.code}-{product.name}")
+            work_data = {"created_run": created_run,
+                         "product": product, "end_date": end_date}
             allocated_contribution = None
             # 1.2 get all the payment plan per product
-            work_data["payment_plans"] = get_payment_plan_queryset(product, end_date)
-            logger.debug(f"{len(work_data['payment_plans'])} payment plan found")
+            work_data["payment_plans"] = get_payment_plan_queryset(
+                product, end_date)
+            logger.debug(
+                f"{len(work_data['payment_plans'])} payment plan found")
             # valuate the claims
             # 5 Generate BatchPayment per product (Ideally per pool but the notion doesn't exist yet)
             trigger_calculation_based_on_context(
@@ -251,8 +252,10 @@ def do_process_batch(audit_user_id, location_id, end_date):
             # save the batch run into db
             logger.debug("do_process_batch created run: %s", created_run.id)
     else:
-        logger.info("no product found in  %s for %s/%s", location_id, period, year)
+        logger.info("no product found in  %s for %s/%s",
+                    location_id, period, year)
     return created_run
+
 
 def add_status_filter(work_data, status):
     ret = work_data.copy()
@@ -261,14 +264,16 @@ def add_status_filter(work_data, status):
     ret['services'] = work_data['services'].filter(claim_status=status)
     return ret
 
+
 def trigger_calculation_based_on_context(
         context, work_data, status, end_date, product,
         location_id, allocated_contribution, user_id
 ):
     if work_data["payment_plans"]:
-        
+
         for payment_plan in work_data["payment_plans"]:
-            logger.debug(f"Starting evaluating payment plan {payment_plan.code}")
+            logger.debug(
+                f"Starting evaluating payment plan {payment_plan.code}")
             start_date = get_start_date(end_date, payment_plan.periodicity)
             # run only when it makes sense based on periodicitiy
             if start_date is not None:
@@ -284,9 +289,11 @@ def trigger_calculation_based_on_context(
                             location_id=location_id, start_date=start_date, end_date=end_date
                         )
                         if rcr:
-                            logger.debug("conversion processed for: %s", str(rcr))
+                            logger.debug(
+                                "conversion processed for: %s", str(rcr))
                         else:
-                            logger.debug(f"No conversion done for {payment_plan.code}")
+                            logger.debug(
+                                f"No conversion done for {payment_plan.code}")
                     except Exception as e:
                         message = _(
                             "Batch run %s failed %s: %s" % (
@@ -298,19 +305,26 @@ def trigger_calculation_based_on_context(
                         logger.debug(message)
                         raise Exception(message)
                 else:
-                    logger.debug(f"Calulation not found for {payment_plan.code}")
+                    logger.debug(
+                        f"Calulation not found for {payment_plan.code}")
 
 
 def update_work_data(work_data, product, status, start_date, end_date, allocated_contribution=None):
     work_data["start_date"] = start_date
 # 1.3 generate queryset
-    work_data["items"] = get_items_queryset(product, status, work_data['created_run'], start_date, end_date)
-    work_data["services"] = get_services_queryset(product, status, work_data['created_run'], start_date, end_date)
-    work_data["contributions"] = get_contribution_queryset(product, start_date, end_date)
-    work_data['claims'] = get_claim_queryset(product, status, work_data['created_run'],start_date, end_date)
-    work_data['bill_payments'] = get_bill_payment_queryset(product, start_date, end_date)
-    
-    work_data['invoice_payments'] = get_invoice_payment_queryset(product, start_date, end_date)
+    work_data["items"] = get_items_queryset(
+        product, status, work_data['created_run'], start_date, end_date)
+    work_data["services"] = get_services_queryset(
+        product, status, work_data['created_run'], start_date, end_date)
+    work_data["contributions"] = get_contribution_queryset(
+        product, start_date, end_date)
+    work_data['claims'] = get_claim_queryset(
+        product, status, work_data['created_run'], start_date, end_date)
+    work_data['bill_payments'] = get_bill_payment_queryset(
+        product, start_date, end_date)
+
+    work_data['invoice_payments'] = get_invoice_payment_queryset(
+        product, start_date, end_date)
     if allocated_contribution is None:
         allocated_contribution = {}
     start_date_str = str(start_date)
@@ -339,7 +353,7 @@ def get_items_queryset(product, status, batch_run, start_date, end_date):
         validity_to__isnull=True,
         product=product
     ).distinct().values('id')
-    
+
     return ClaimItem.objects.filter(
         id__in=Subquery(subquery)
     ).select_related(
@@ -367,13 +381,13 @@ def get_claim_queryset(product, status, batch_run, start_date, end_date):
     subquery = Claim.objects.filter(
         Q(items__product=product) | Q(services__product=product),
         Q(batch_run__isnull=True) | Q(batch_run=batch_run),
-        Q(Q(date_to__lt=end_date) | (Q(date_to__isnull=True) & Q(date_from__lt=end_date))),
+        Q(Q(date_to__lt=end_date) | (
+            Q(date_to__isnull=True) & Q(date_from__lt=end_date))),
         *Claim.filter_validity(),
         status=status,
         process_stamp__isnull=False,
     ).distinct().values('id')
     return Claim.objects.filter(id__in=Subquery(subquery))
-    
 
 
 def get_allocated_contribution_queryset(product, start_date, end_date):
@@ -382,15 +396,15 @@ def get_allocated_contribution_queryset(product, start_date, end_date):
         policy__effective_date__lte=end_date,
         policy__expiry_date__gte=start_date,
         policy__product=product
-        ).select_related('policy')
+    ).select_related('policy')
 
 
 def get_product_queryset(end_date, location_id):
     queryset = Product.objects.filter(
         Q(date_to__gte=end_date) | Q(date_to__isnull=True),
         *Product.filter_validity(),
-       date_from__lte=end_date,
-        
+        date_from__lte=end_date,
+
     )
     if location_id is not None:
         return queryset.filter(location_id=location_id)
@@ -401,7 +415,7 @@ def get_product_queryset(end_date, location_id):
 def get_contribution_queryset(product, start_date, end_date):
     return Premium.objects \
         .filter(
-            validity_to__isnull=True, 
+            validity_to__isnull=True,
             created_date__lte=end_date,
             policy__effective_date__lte=end_date,
             policy__expiry_date__gte=start_date,
@@ -411,12 +425,12 @@ def get_contribution_queryset(product, start_date, end_date):
 def get_bill_payment_queryset(product, start_date, end_date):
     # need to get the invoice with lines that match premium for that product
 
-    
     qs = BillPayment.objects.filter(is_deleted=False)\
         .filter(
             date_created__gte=start_date,
             date_created__lt=end_date,
-            bill__line_items_bill__line_type=get_content_type_for_model(Premium),
+            bill__line_items_bill__line_type=get_content_type_for_model(
+                Premium),
             bill__line_items_bill__line_id__in=Subquery(
                 Premium.objects.filter(validity_to__isnull=True)
                 .filter(policy__product=product)
@@ -440,18 +454,16 @@ def get_invoice_payment_queryset(product, start_date, end_date):
     )
     return qs
 
-            
-        
-
 
 def get_allocated_premium(premiums, start_date, end_date):
     # Calculate allcated contributions
     # go trough the contribution and find the allocated contribution
     allocated_premiums = 0
     for premium in premiums:
-        # FIXME migration contribution 0008 created_date from date to datetime 
+        # FIXME migration contribution 0008 created_date from date to datetime
         # not working in PSQL for no apparent reason, hence this work arround:
-        created_date = premium.created_date.date() if hasattr(premium.created_date, 'date') else premium.created_date
+        created_date = premium.created_date.date() if hasattr(
+            premium.created_date, 'date') else premium.created_date
         policy_payment_start = max(premium.policy.effective_date, created_date)
         allocation_start = max(policy_payment_start, start_date)
         if isinstance(allocation_start, datetime.datetime):
@@ -460,10 +472,10 @@ def get_allocated_premium(premiums, start_date, end_date):
         if isinstance(allocation_stop, datetime.datetime):
             allocation_stop = allocation_stop.date()
         allocation_diff = (allocation_stop - allocation_start).days + 1
-        
+
         policy_duration = (
-            premium.policy.expiry_date - 
-            policy_payment_start
+            premium.policy.expiry_date
+            - policy_payment_start
         ).days + (1 if policy_payment_start >= start_date else 0)
         allocated_premiums += premium.amount * allocation_diff / policy_duration
     return allocated_premiums
@@ -473,9 +485,11 @@ def get_hospital_claim_filter(ceiling_interpretation, mode='I', prefix=''):
     # return the filter base on cieling interpretation and mode (I inpatient, O outpatient),
     # prefix is required if the queryset is not about claims
     if ceiling_interpretation == Product.CEILING_INTERPRETATION_HOSPITAL:
-        Qterm = (Q(('%shealth_facility_level' % prefix, HealthFacility.LEVEL_HOSPITAL)))
+        Qterm = (Q(('%shealth_facility_level' %
+                 prefix, HealthFacility.LEVEL_HOSPITAL)))
     else:
-        Qterm = (Q('%sdate_to__isnull' % prefix, False) & Q('%sdate_to__gt' % prefix, F('date_from')))
+        Qterm = (Q('%sdate_to__isnull' % prefix, False)
+                 & Q('%sdate_to__gt' % prefix, F('date_from')))
     if mode == 'I':
         return Qterm
     elif mode == 'O':
@@ -658,14 +672,16 @@ def process_capitation_payment_data(params):
     with connection.cursor() as cur:
         # HFLevel based on
         # https://github.com/openimis/web_app_vb/blob/2492c20d8959e39775a2dd4013d2fda8feffd01c/IMIS_BL/HealthFacilityBL.vb#L77
-        _execute_capitation_payment_procedure(cur, 'uspCreateCapitationPaymentReportData', params)
+        _execute_capitation_payment_procedure(
+            cur, 'uspCreateCapitationPaymentReportData', params)
 
 
 def get_commision_payment_report_data(params):
     with connection.cursor() as cur:
         # HFLevel based on
         # https://github.com/openimis/web_app_vb/blob/2492c20d8959e39775a2dd4013d2fda8feffd01c/IMIS_BL/HealthFacilityBL.vb#L77
-        _execute_capitation_payment_procedure(cur, 'uspSSRSRetrieveCapitationPaymentReportData', params)
+        _execute_capitation_payment_procedure(
+            cur, 'uspSSRSRetrieveCapitationPaymentReportData', params)
 
         # stored proc outputs several results,
         # we are only interested in the last one
@@ -674,7 +690,7 @@ def get_commision_payment_report_data(params):
         while next:
             try:
                 data = cur.fetchall()
-            except Exception as e:
+            except Exception:
                 pass
             finally:
                 next = cur.nextset()
@@ -694,7 +710,7 @@ def _execute_capitation_payment_procedure(cursor, procedure, params):
                     @DistrictId = %s,
                     @ProdId = %s,
                     @Year = %s,
-                    @Month = %s,	
+                    @Month = %s,
                     @HFLevel = @HF;
             """
 
@@ -838,13 +854,17 @@ def get_contribution_index_rate(value, pp_params, work_data):
     # the product and perdiod (fee for service takes only 'R' price_origin items and services)
     # get distr for the current month
     allocated_contributions = float(work_data["allocated_contributions"])
-    
-    weight_adjusted_amount = float(pp_params.get("weight_adjusted_amount", 100) / 100) 
+
+    weight_adjusted_amount = float(
+        pp_params.get("weight_adjusted_amount", 100) / 100)
     value = float(value)
     if value > 0 and allocated_contributions > 0 and 'distr_%i' % work_data['end_date'].month in pp_params:
-        distr = float(pp_params['distr_%i' % work_data['end_date'].month] / 100)
-        index = (weight_adjusted_amount * distr * allocated_contributions) / value
-        period_type, period_id = get_period(work_data['start_date'], work_data['end_date'])
+        distr = float(pp_params['distr_%i' %
+                      work_data['end_date'].month] / 100)
+        index = (weight_adjusted_amount * distr
+                 * allocated_contributions) / value
+        period_type, period_id = get_period(
+            work_data['start_date'], work_data['end_date'])
         year = work_data['end_date'].year
         audit_user_id = work_data['created_run'].audit_user_id
         create_index(
@@ -854,7 +874,7 @@ def get_contribution_index_rate(value, pp_params, work_data):
         return index, distr
     else:
         return 1, 1
-    
+
 
 def create_index(product, index_value, index_type, period_type, period_id, year, audit_user_id):
     index = RelativeIndex()

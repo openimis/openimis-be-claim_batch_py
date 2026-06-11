@@ -16,10 +16,14 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name='BatchRun',
             fields=[
-                ('validity_from', core.fields.DateTimeField(db_column='ValidityFrom', default=datetime.datetime.now)),
-                ('validity_to', core.fields.DateTimeField(blank=True, db_column='ValidityTo', null=True)),
-                ('legacy_id', models.IntegerField(blank=True, db_column='LegacyID', null=True)),
-                ('id', models.AutoField(db_column='RunID', primary_key=True, serialize=False)),
+                ('validity_from', core.fields.DateTimeField(
+                    db_column='ValidityFrom', default=datetime.datetime.now)),
+                ('validity_to', core.fields.DateTimeField(
+                    blank=True, db_column='ValidityTo', null=True)),
+                ('legacy_id', models.IntegerField(
+                    blank=True, db_column='LegacyID', null=True)),
+                ('id', models.AutoField(db_column='RunID',
+                 primary_key=True, serialize=False)),
                 ('run_date', core.fields.DateTimeField(db_column='RunDate')),
                 ('audit_user_id', models.IntegerField(db_column='AuditUserID')),
                 ('run_year', models.IntegerField(db_column='RunYear')),
@@ -33,14 +37,19 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name='RelativeDistribution',
             fields=[
-                ('id', models.AutoField(db_column='DistrID', primary_key=True, serialize=False)),
+                ('id', models.AutoField(db_column='DistrID',
+                 primary_key=True, serialize=False)),
                 ('type', models.SmallIntegerField(db_column='DistrType')),
-                ('care_type', models.CharField(db_column='DistrCareType', max_length=1)),
+                ('care_type', models.CharField(
+                    db_column='DistrCareType', max_length=1)),
                 ('period', models.SmallIntegerField(db_column='Period')),
-                ('percent', models.DecimalField(blank=True, db_column='DistrPerc', decimal_places=2, max_digits=18, null=True)),
+                ('percent', models.DecimalField(
+                    blank=True, db_column='DistrPerc', decimal_places=2, max_digits=18, null=True)),
                 ('validity_from', models.DateTimeField(db_column='ValidityFrom')),
-                ('validity_to', models.DateTimeField(blank=True, db_column='ValidityTo', null=True)),
-                ('legacy_id', models.IntegerField(blank=True, db_column='LegacyID', null=True)),
+                ('validity_to', models.DateTimeField(
+                    blank=True, db_column='ValidityTo', null=True)),
+                ('legacy_id', models.IntegerField(
+                    blank=True, db_column='LegacyID', null=True)),
                 ('audit_user_id', models.IntegerField(db_column='AuditUserID')),
             ],
             options={
@@ -51,16 +60,22 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name='RelativeIndex',
             fields=[
-                ('validity_from', core.fields.DateTimeField(db_column='ValidityFrom', default=datetime.datetime.now)),
-                ('validity_to', core.fields.DateTimeField(blank=True, db_column='ValidityTo', null=True)),
-                ('legacy_id', models.IntegerField(blank=True, db_column='LegacyID', null=True)),
-                ('id', models.AutoField(db_column='RelIndexID', primary_key=True, serialize=False)),
+                ('validity_from', core.fields.DateTimeField(
+                    db_column='ValidityFrom', default=datetime.datetime.now)),
+                ('validity_to', core.fields.DateTimeField(
+                    blank=True, db_column='ValidityTo', null=True)),
+                ('legacy_id', models.IntegerField(
+                    blank=True, db_column='LegacyID', null=True)),
+                ('id', models.AutoField(db_column='RelIndexID',
+                 primary_key=True, serialize=False)),
                 ('type', models.SmallIntegerField(db_column='RelType')),
-                ('care_type', models.CharField(db_column='RelCareType', max_length=1)),
+                ('care_type', models.CharField(
+                    db_column='RelCareType', max_length=1)),
                 ('year', models.IntegerField(db_column='RelYear')),
                 ('period', models.SmallIntegerField(db_column='RelPeriod')),
                 ('calc_date', models.DateTimeField(db_column='CalcDate')),
-                ('rel_index', models.DecimalField(blank=True, db_column='RelIndex', decimal_places=4, max_digits=18, null=True)),
+                ('rel_index', models.DecimalField(
+                    blank=True, db_column='RelIndex', decimal_places=4, max_digits=18, null=True)),
                 ('audit_user_id', models.IntegerField(db_column='AuditUserID')),
             ],
             options={
