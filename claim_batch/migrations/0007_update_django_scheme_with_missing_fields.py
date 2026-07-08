@@ -2,6 +2,23 @@
 
 from django.db import migrations, models
 import django.db.models.deletion
+from claim_batch.services import ProcessBatchSubmit, ProcessBatchService
+from concurrent.futures import ThreadPoolExecutor
+
+
+def add_previous_batch_run_catpitaion_payment_entries(apps, schema_editor):
+    BatchRun = apps.get_model('claim_batch', 'BatchRun')
+    service = ProcessBatchService(None)
+    batch_runs = BatchRun.objects.filter(*BatchRun.filter_validity()).values(
+        'location', 'run_year', 'run_month').all()
+    with ThreadPoolExecutor(max_workers=30) as executor:
+        for run in batch_runs:
+            submit = ProcessBatchSubmit(
+                location_id=run['location'],
+                year=run['run_year'],
+                month=run['run_month'],
+            )
+            executor.submit(service.capitation_report_data_for_summit, submit)
 
 
 class Migration(migrations.Migration):
@@ -49,4 +66,6 @@ class Migration(migrations.Migration):
             field=models.SmallIntegerField(
                 choices=[(12, 'Month'), (4, 'Quarter'), (1, 'Year')], db_column='DistrType'),
         ),
+        migrations.RunPython(add_previous_batch_run_catpitaion_payment_entries,
+                             reverse_code=migrations.RunPython.noop)
     ]

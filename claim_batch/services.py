@@ -21,6 +21,7 @@ from invoice.models import BillPayment, InvoicePayment
 from location.models import HealthFacility, Location
 from product.models import Product
 from functools import lru_cache
+from claim_batch.signals import batch_run_determine_products
 from claim.subqueries import (
     update_claim_valuated as claim_update_claim_valuated,
     update_claim_indexed_remunerated as claim_update_claim_indexed_remunerated
@@ -36,8 +37,9 @@ def product_content_type():
 
 @core.comparable
 class ProcessBatchSubmit(object):
-    def __init__(self, location_id, year, month):
+    def __init__(self, location_id=None, year=None, month=None, scope=None):
         self.location_id = location_id
+        self.scope = scope
         self.year = year
         self.month = month
 
@@ -64,196 +66,188 @@ class ProcessBatchService(object):
         self.user = user
 
     def submit(self, submit):
-        return process_batch(self.user.i_user.id, submit.location_id, submit.month, submit.year)
+        scope = getattr(submit, 'scope', None) or submit.location_id
+        return process_batch(self.user.i_user.id, scope=scope, period=submit.month, year=submit.year)
 
-    def old_submit(self, submit):
-        if self.batch_run_already_executed(submit.year, submit.month, submit.location_id):
-            return str(ProcessBatchSubmitError(2))
 
-        with connection.cursor() as cur:
-            sql = """\
-                DECLARE @ret int;
-                EXEC @ret = [dbo].[uspBatchProcess] @AuditUser = %s, @LocationId = %s, @Year = %s, @Period = %s;
-                SELECT @ret;
-            """
-            cur.execute(sql, (self.user.i_user.id, submit.location_id,
-                              submit.year, submit.month))
-            # stored proc outputs several results,
-            # we are only interested in the last one
-            next = True
-            res = None
-            while next:
-                try:
-                    res = cur.fetchone()
-                except Exception:
-                    pass
-                finally:
-                    next = cur.nextset()
-            if res[0] != 0:  # zero means "all done"
-                return str([ProcessBatchSubmitError(res[0])])
-        self.capitation_report_data_for_summit(submit)
+def batch_run_already_executed(cls, year, month, location_id=None, scope=None):
+    qs = BatchRun.objects.filter(*BatchRun.filter_validity(), run_year=year, run_month=month)
 
-    @classmethod
-    def capitation_report_data_for_summit(cls, submit):
-        capitation_payment_products = []
-        for svc_item in [ClaimItem, ClaimService]:
-            capitation_payment_products.extend(
-                svc_item.objects
-                .filter(claim__status=Claim.STATUS_VALUATED)
-                .filter(claim__validity_to__isnull=True)
-                .filter(validity_to__isnull=True)
-                .filter(status=svc_item.STATUS_PASSED)
-                .annotate(prod_location=Coalesce("product__location_id", Value(-1)))
-                .filter(prod_location=submit.location_id if submit.location_id else -1)
-                .values('product_id')
-                .distinct()
+    if scope is not None:
+        # New GFK path
+        ct = ContentType.objects.get_for_model(scope.__class__)
+        qs = qs.filter(scope_type=ct, scope_id=str(scope.pk))
+    elif location_id is not None:
+        # Legacy / scope as location
+        if location_id == -1:
+            location_id = None
+        if location_id is None:
+            qs = qs.filter(scope_id__isnull=True) | qs.filter(scope__isnull=True)
+        else:
+            # Try both the new GFK (when scope is a Location) and old-style if still present
+            loc_ct = ContentType.objects.get_for_model(Location)
+            qs = qs.filter(
+                Q(scope_type=loc_ct, scope_id=str(location_id))
+                | Q(scope_id=str(location_id))  # fallback if only id was stored
             )
+    else:
+        # No scope info -> consider only null scope runs
+        qs = qs.filter(scope_id__isnull=True)
 
-        region_id, district_id = _get_capitation_region_and_district(
-            submit.location_id)
-        for product in set(map(lambda x: x['product_id'], capitation_payment_products)):
-            params = {
-                'region_id': region_id,
-                'district_id': district_id,
-                'prod_id': product,
-                'year': submit.year,
-                'month': submit.month,
-            }
-            is_report_data_available = get_commision_payment_report_data(
-                params)
-            if not is_report_data_available:
-                process_capitation_payment_data(params)
-            else:
-                logger.debug(
-                    F"Capitation payment data for {params} already exists")
+    return qs.exists()
 
-    @classmethod
-    def batch_run_already_executed(cls, year, month, location_id):
-        return BatchRun.objects \
-            .filter(run_year=year) \
-            .filter(run_month=month) \
-            .annotate(nn_location_id=Coalesce("location_id", Value(-1))) \
-            .filter(nn_location_id=-1 if location_id is None else location_id) \
-            .filter(validity_to__isnull=True) \
-            .exists()
+
+def _resolve_scope(scope_or_location_id):
+    """Turn a legacy location_id or a scope object into a usable scope (or None)."""
+    if scope_or_location_id is None:
+        return None
+    if isinstance(scope_or_location_id, (Location, Product)):
+        return scope_or_location_id
+    # assume it's a location id (int or -1)
+    if scope_or_location_id == -1:
+        return None
+    try:
+        return Location.objects.get(id=scope_or_location_id)
+    except (Location.DoesNotExist, ValueError, TypeError):
+        return None
+
+
+def get_products_for_batch_run(batch_run, end_date):
+    """Return list of Products for this BatchRun based on its scope + json_ext + signals."""
+    if not batch_run:
+        return []
+
+    scope = batch_run.scope
+
+    # 1. Direct Product scope
+    if isinstance(scope, Product):
+        return [scope]
+
+    # 2. Location scope (or legacy location)
+    if isinstance(scope, Location):
+        return get_product_queryset(end_date, scope.id)
+
+    # 3. Products already stored in json_ext (set by previous run or receiver)
+    prods = batch_run.products
+    if prods:
+        return prods
+
+    # 4. Neither Product nor Location -> give receivers a chance to populate
+    batch_run_determine_products.send(sender=BatchRun, batch_run=batch_run)
+
+    # Receivers may have done batch_run.products = [...] (which writes json_ext)
+    prods = batch_run.products
+    if prods:
+        # persist what the receivers decided
+        batch_run.save(update_fields=['json_ext'] if hasattr(batch_run, 'json_ext') else None)
+        return prods
+
+    # 5. Fallback to old location-based logic if scope is None (null-scope run)
+    return get_product_queryset(end_date, None)
 
 
 @transaction.atomic
-def process_batch(audit_user_id, location_id, period, year):
-    # declare table tblClaimsIDs
-    if location_id == -1:
-        location_id = None
+def process_batch(audit_user_id, scope=None, period=None, year=None, location_id=None):
+    """Process a batch run.
 
-    # Transactional stuff
-    queryset = BatchRun.objects \
-        .filter(run_year=year, run_month=period, *core.utils.filter_validity())
-    if location_id is None:
-        queryset = queryset.filter(location_id__isnull=True)
-    else:
-        queryset = queryset.filter(location__id=location_id)
+    scope can be:
+      - a Location instance (legacy behaviour)
+      - a Product instance (direct product batch)
+      - any other model instance (will trigger batch_run_determine_products signal)
+      - None (global / null scope)
 
-    already_run_batch = queryset.values("id").first()
+    For backward compatibility, location_id is still accepted and converted to a Location scope.
+    """
+    already_run_batch = batch_run_already_executed(year, period, location_id, scope)
     if already_run_batch:
         return [str(ProcessBatchSubmitError(2))]
+
     _, days_in_month = calendar.monthrange(year, period)
     end_date = (
         datetime.datetime(year, period, days_in_month)
         + datetime.timedelta(days=1)
     )
-    # TODO - double check this condition
-    # if end_date < now:
-    #    return [str(ProcessBatchSubmitError(3))]
-    # TODO create message "Batch cannot be run before the end of the selected period"
+
     try:
-        do_process_batch(audit_user_id, location_id, end_date)
+        logger.debug("do_process_batch scope=%s for %s/%s", scope, period, year)
+
+        from core.utils import TimeUtils
+        created_run = BatchRun(
+            run_year=year,
+            run_month=period,
+            run_date=TimeUtils.now(),
+            audit_user_id=audit_user_id,
+            validity_from=TimeUtils.now(),
+            scope=scope,
+        )
+        created_run.save()
+        logger.debug(f"do_process_batch created run: {created_run.id}")
+
+        products = get_products_for_batch_run(created_run, end_date)
+
+        if products:
+            if isinstance(scope, Location):
+                for product in products:
+                    do_process_batch(audit_user_id, scope, [product], end_date, created_run)
+            else:
+                do_process_batch(audit_user_id, scope, products, end_date, created_run)
+
     except (KeyboardInterrupt, SystemExit):
         raise
     except Exception as exc:
         logger.warning(
-            f"Exception while processing batch user {audit_user_id}, location {location_id}, period {period}, year {year}",
+            f"Exception while processing batch user {audit_user_id}, scope {scope}, period {period}, year {year}",
             exc_info=True
         )
         return [str(ProcessBatchSubmitError(-1, str(exc)))]
 
 
-def _get_capitation_region_and_district(location_id):
-    if not location_id:
-        return None, None
-    location = Location.objects.get(id=location_id)
-    region_id = None
-    district_id = None
 
-    if location.type == 'D':
-        district_id = location_id
-        region_id = location.parent.id
-    elif location.type == 'R':
-        region_id = location.id
-
-    return region_id, district_id
-
-
-def do_process_batch(audit_user_id, location_id, end_date):
+def do_process_batch(audit_user_id, scope, products, end_date, created_run):
     # As we update claims, we add the claims not in relative pricing and then update the status
-    period = end_date.month
-    year = end_date.year
-    logger.debug("do_process_batch location %s for %s/%s",
-                 location_id, period, year)
-
-    from core.utils import TimeUtils
-    created_run = BatchRun.objects.create(location_id=location_id, run_year=year, run_month=period,
-                                          run_date=TimeUtils.now(), audit_user_id=audit_user_id,
-                                          validity_from=TimeUtils.now())
-    logger.debug(f"do_process_batch created run: {created_run.id}")
-
-    # 0 prepare the batch run :  does it really make sense
-    # per location ? (Ideally per pool but the notion doesn't exist yet)
-    # 0.1 get all product concerned, all product that have are configured for the location
-    # period_quarter = period - 2 if period % 3 == 0 else 0
-    # period_sem = period - 5 if period % 6 == 0 else 0
-
-    products = get_product_queryset(end_date, location_id)
-    # 1 per product (Ideally per pool but the notion doesn't exist yet)
     if products:
-        for product in products:
-            logger.debug(
-                f"do_process_batch creating batch run process for product {product.code}-{product.name}")
-            work_data = {"created_run": created_run,
-                         "product": product, "end_date": end_date}
-            allocated_contribution = None
-            # 1.2 get all the payment plan per product
-            work_data["payment_plans"] = get_payment_plan_queryset(
-                product, end_date)
-            logger.debug(
-                f"{len(work_data['payment_plans'])} payment plan found")
-            # valuate the claims
-            # 5 Generate BatchPayment per product (Ideally per pool but the notion doesn't exist yet)
-            trigger_calculation_based_on_context(
-                "BatchValuate",
-                work_data,
-                Claim.STATUS_PROCESSED,
-                end_date,
-                product,
-                location_id,
-                allocated_contribution,
-                audit_user_id
-            )
-            # 5.1 filter a calculation valid for batchRun with context BatchPayment (got via 0.2)
-            # 54.2 Execute the converter per product/batch run/claim (not claims)
-            trigger_calculation_based_on_context(
-                "BatchPayment",
-                work_data,
-                Claim.STATUS_VALUATED,
-                end_date,
-                product,
-                location_id,
-                allocated_contribution,
-                audit_user_id
-            )
-            # save the batch run into db
-            logger.debug("do_process_batch created run: %s", created_run.id)
+        product_list = _as_product_list(products)
+        logger.debug(
+            f"do_process_batch creating batch run process for products {[p.code for p in product_list]}")
+        work_data = {
+            "created_run": created_run,
+            "products": product_list,  # use only products (list)
+            "end_date": end_date,
+        }
+        if created_run.scope:
+            work_data["scope"] = created_run.scope
+        allocated_contribution = None
+        # 1.2 get all the payment plan per product
+        payment_plans = []
+        for prod in product_list:
+            payment_plans.extend(get_payment_plan_queryset(prod, end_date))
+        work_data["payment_plans"] = payment_plans
+        logger.debug(
+            f"{len(work_data['payment_plans'])} payment plan found")
+        # valuate the claims
+        # 5 Generate BatchPayment per product (Ideally per pool but the notion doesn't exist yet)
+        trigger_calculation_based_on_context(
+            "BatchValuate",
+            work_data,
+            Claim.STATUS_PROCESSED,
+            end_date,
+            allocated_contribution,
+            audit_user_id
+        )
+        # 5.1 filter a calculation valid for batchRun with context BatchPayment (got via 0.2)
+        # 54.2 Execute the converter per product/batch run/claim (not claims)
+        trigger_calculation_based_on_context(
+            "BatchPayment",
+            work_data,
+            Claim.STATUS_VALUATED,
+            end_date,
+            allocated_contribution,
+            audit_user_id
+        )
+        # save the batch run into db
+        logger.debug("do_process_batch created run: %s", created_run.id)
     else:
-        logger.info("no product found in  %s for %s/%s",
-                    location_id, period, year)
+        logger.info("no product found for batch")
     return created_run
 
 
@@ -266,10 +260,12 @@ def add_status_filter(work_data, status):
 
 
 def trigger_calculation_based_on_context(
-        context, work_data, status, end_date, product,
-        location_id, allocated_contribution, user_id
+        context, work_data, status, end_date, allocated_contribution, user_id
 ):
-    if work_data["payment_plans"]:
+    """Trigger calc rules for BatchValuate / BatchPayment etc.
+    Work data is expected to carry 'products' (list) rather than location_id or single product.
+    """
+    if work_data.get("payment_plans"):
 
         for payment_plan in work_data["payment_plans"]:
             logger.debug(
@@ -277,8 +273,17 @@ def trigger_calculation_based_on_context(
             start_date = get_start_date(end_date, payment_plan.periodicity)
             # run only when it makes sense based on periodicitiy
             if start_date is not None:
+                # Scope to this payment plan's specific product (benefit_plan).
+                # This ensures that even when do_process_batch is called with a list of
+                # products, each payment plan's valuation/payment works against only its
+                # own product's claims/items/etc. We copy the dict so we don't mutate
+                # the outer work_data for other plans in the same batch.
+                plan_product = getattr(payment_plan, "benefit_plan", None)
+                if plan_product:
+                    work_data = dict(work_data)
+                    work_data["products"] = [plan_product]
                 allocated_contribution, work_data = update_work_data(
-                    work_data, product, status, start_date, end_date, allocated_contribution
+                    work_data, status, start_date, end_date, allocated_contribution
                 )
                 calculation = get_calculation_object(payment_plan.calculation)
                 if calculation is not None:
@@ -286,7 +291,7 @@ def trigger_calculation_based_on_context(
                         rcr = calculation.calculate_if_active_for_object(
                             payment_plan, context=context,
                             work_data=work_data, audit_user_id=user_id,
-                            location_id=location_id, start_date=start_date, end_date=end_date
+                            start_date=start_date, end_date=end_date
                         )
                         if rcr:
                             logger.debug(
@@ -309,49 +314,68 @@ def trigger_calculation_based_on_context(
                         f"Calulation not found for {payment_plan.code}")
 
 
-def update_work_data(work_data, product, status, start_date, end_date, allocated_contribution=None):
+def _as_product_list(val):
+    """Normalize product or list of products to list. Supports 'products' in work_data or legacy 'product'."""
+    if val is None:
+        return []
+    if isinstance(val, (list, tuple, set)):
+        return [p for p in val if p]
+    return [val]
+
+
+def update_work_data(work_data, status, start_date, end_date, allocated_contribution=None):
     work_data["start_date"] = start_date
+    # adapt work data: use only products list (with legacy fallback)
+    products = get_products_from_work_data(work_data)
+    # keep normalized
+    work_data["products"] = products
 # 1.3 generate queryset
     work_data["items"] = get_items_queryset(
-        product, status, work_data['created_run'], start_date, end_date)
+        products, status, work_data.get('created_run'), start_date, end_date)
     work_data["services"] = get_services_queryset(
-        product, status, work_data['created_run'], start_date, end_date)
+        products, status, work_data.get('created_run'), start_date, end_date)
     work_data["contributions"] = get_contribution_queryset(
-        product, start_date, end_date)
+        products, start_date, end_date)
     work_data['claims'] = get_claim_queryset(
-        product, status, work_data['created_run'], start_date, end_date)
+        products, status, work_data.get('created_run'), start_date, end_date)
     work_data['bill_payments'] = get_bill_payment_queryset(
-        product, start_date, end_date)
+        products, start_date, end_date)
 
     work_data['invoice_payments'] = get_invoice_payment_queryset(
-        product, start_date, end_date)
+        products, start_date, end_date)
     if allocated_contribution is None:
         allocated_contribution = {}
     start_date_str = str(start_date)
     if start_date_str not in allocated_contribution:
         allocated_contribution[start_date_str] = get_allocated_premium(
-            get_allocated_contribution_queryset(product, start_date, end_date), start_date, end_date)
+            get_allocated_contribution_queryset(products, start_date, end_date), start_date, end_date)
     work_data['allocated_contributions'] = allocated_contribution[start_date_str]
     return allocated_contribution, work_data
 
 
-def get_payment_plan_queryset(product, end_date):
+def get_payment_plan_queryset(products, end_date):
+    products = _as_product_list(products)
+    if not products:
+        return PaymentPlan.objects.none()
     return PaymentPlan.objects.filter(
         Q(date_valid_to__isnull=True) | Q(date_valid_to__gte=end_date),
         date_valid_from__lte=end_date,
-        benefit_plan_id=product.id,
+        benefit_plan_id__in=[p.id for p in products],
         benefit_plan_type=product_content_type()
     ).filter(is_deleted=False)
 
 
-def get_items_queryset(product, status, batch_run, start_date, end_date):
+def get_items_queryset(products, status, batch_run, start_date, end_date):
+    products = _as_product_list(products)
+    if not products:
+        return ClaimItem.objects.none()
     subquery = ClaimItem.objects.filter(
         Q(claim__batch_run__isnull=True) | Q(claim__batch_run=batch_run),
+        *Claim.filter_validity(prefix='claim__'),
+        *ClaimItem.filter_validity(),
         claim__status=status,
         claim__process_stamp__lte=end_date,
-        claim__validity_to__isnull=True,
-        validity_to__isnull=True,
-        product=product
+        product__in=products
     ).distinct().values('id')
 
     return ClaimItem.objects.filter(
@@ -361,14 +385,17 @@ def get_items_queryset(product, status, batch_run, start_date, end_date):
     ).order_by('claim__health_facility').order_by('claim')
 
 
-def get_services_queryset(product, status, batch_run, start_date, end_date):
+def get_services_queryset(products, status, batch_run, start_date, end_date):
+    products = _as_product_list(products)
+    if not products:
+        return ClaimService.objects.none()
     subquery = ClaimService.objects.filter(
         Q(claim__batch_run__isnull=True) | Q(claim__batch_run=batch_run),
+        *Claim.filter_validity(prefix='claim__'),
+        *ClaimService.filter_validity(),
         claim__status=status,
         claim__process_stamp__lte=end_date,
-        claim__validity_to__isnull=True,
-        validity_to__isnull=True,
-        product=product
+        product__in=products
     ).distinct().values('id')
     return ClaimService.objects.filter(
         id__in=Subquery(subquery)
@@ -377,9 +404,12 @@ def get_services_queryset(product, status, batch_run, start_date, end_date):
     ).order_by('claim__health_facility').order_by('claim')
 
 
-def get_claim_queryset(product, status, batch_run, start_date, end_date):
+def get_claim_queryset(products, status, batch_run, start_date, end_date):
+    products = _as_product_list(products)
+    if not products:
+        return Claim.objects.none()
     subquery = Claim.objects.filter(
-        Q(items__product=product) | Q(services__product=product),
+        Q(items__product__in=products) | Q(services__product__in=products),
         Q(batch_run__isnull=True) | Q(batch_run=batch_run),
         Q(Q(date_to__lt=end_date) | (
             Q(date_to__isnull=True) & Q(date_from__lt=end_date))),
@@ -390,12 +420,15 @@ def get_claim_queryset(product, status, batch_run, start_date, end_date):
     return Claim.objects.filter(id__in=Subquery(subquery))
 
 
-def get_allocated_contribution_queryset(product, start_date, end_date):
+def get_allocated_contribution_queryset(products, start_date, end_date):
+    products = _as_product_list(products)
+    if not products:
+        return Premium.objects.none()
     return Premium.objects.filter(
         *Claim.filter_validity(),
         policy__effective_date__lte=end_date,
         policy__expiry_date__gte=start_date,
-        policy__product=product
+        policy__product__in=products
     ).select_related('policy')
 
 
@@ -412,19 +445,24 @@ def get_product_queryset(end_date, location_id):
         return queryset.filter(location_id__isnull=True)
 
 
-def get_contribution_queryset(product, start_date, end_date):
+def get_contribution_queryset(products, start_date, end_date):
+    products = _as_product_list(products)
+    if not products:
+        return Premium.objects.none()
     return Premium.objects \
         .filter(
-            validity_to__isnull=True,
+            *Premium.filter_validity(),
             created_date__lte=end_date,
             policy__effective_date__lte=end_date,
             policy__expiry_date__gte=start_date,
-            policy__product=product)
+            policy__product__in=products)
 
 
-def get_bill_payment_queryset(product, start_date, end_date):
+def get_bill_payment_queryset(products, start_date, end_date):
     # need to get the invoice with lines that match premium for that product
-
+    products = _as_product_list(products)
+    if not products:
+        return BillPayment.objects.none()
     qs = BillPayment.objects.filter(is_deleted=False)\
         .filter(
             date_created__gte=start_date,
@@ -432,23 +470,26 @@ def get_bill_payment_queryset(product, start_date, end_date):
             bill__line_items_bill__line_type=get_content_type_for_model(
                 Premium),
             bill__line_items_bill__line_id__in=Subquery(
-                Premium.objects.filter(validity_to__isnull=True)
-                .filter(policy__product=product)
+                Premium.objects.filter(*Premium.filter_validity())
+                .filter(policy__product__in=products)
                 .annotate(as_str=Cast('id', TextField())).values('as_str')
             )
     )
     return qs
 
 
-def get_invoice_payment_queryset(product, start_date, end_date):
+def get_invoice_payment_queryset(products, start_date, end_date):
+    products = _as_product_list(products)
+    if not products:
+        return InvoicePayment.objects.none()
     qs = InvoicePayment.objects.filter(is_deleted=False)\
         .filter(
             date_created__gte=start_date,
             date_created__lt=end_date,
             invoice__line_items__line_type=get_content_type_for_model(Premium),
             invoice__line_items__line_id__in=Subquery(
-                Premium.objects.filter(validity_to__isnull=True)
-                .filter(policy__product=product)
+                Premium.objects.filter(*Premium.filter_validity(),)
+                .filter(policy__product__in=products)
                 .annotate(as_str=Cast('id', TextField())).values('as_str')
             )
     )
@@ -496,6 +537,46 @@ def get_hospital_claim_filter(ceiling_interpretation, mode='I', prefix=''):
         return ~Qterm
     else:
         return Q()
+
+
+def combine_product_filters(products, lifter):
+    """Combine per-product filters using OR (|).
+
+    `lifter` is a callable (lambda or function) that receives a single Product
+    and must return a Q() object representing the filter condition specific to
+    that product (e.g. a ceiling interpretation based condition, optionally
+    combined with a product-scoping Q like Q(product=p) or
+    Q(items__product=p) | Q(services__product=p)).
+
+    The result is a Q() that matches records for *any* of the products when
+    the record satisfies the lifter condition for its associated product.
+    This allows using different product attributes (like ceiling_interpretation)
+    in one filter expression.
+    """
+    products = _as_product_list(products)
+    if not products:
+        return Q()
+    result = None
+    for p in products:
+        part = lifter(p)
+        if result is None:
+            result = part
+        else:
+            result = result | part
+    return result or Q()
+
+
+def get_products_from_work_data(work_data):
+    """Return a normalized list of products from work_data.
+
+    Supports the new 'products' (list) key (for flexible batching by product
+    instead of location_id) with fallback to legacy single 'product'.
+    Always returns a (possibly empty) list.
+    """
+    if not work_data:
+        return []
+    prods = work_data.get("products") or work_data.get("product")
+    return _as_product_list(prods)
 
 
 def get_period(start_date, end_date):
@@ -867,8 +948,10 @@ def get_contribution_index_rate(value, pp_params, work_data):
             work_data['start_date'], work_data['end_date'])
         year = work_data['end_date'].year
         audit_user_id = work_data['created_run'].audit_user_id
+        prods = get_products_from_work_data(work_data)
+        prod = prods[0] if prods else None
         create_index(
-            work_data['product'], index, pp_params['claim_type'],
+            prod, index, pp_params['claim_type'],
             period_type, period_id, year, audit_user_id
         )
         return index, distr
