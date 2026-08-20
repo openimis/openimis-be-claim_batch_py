@@ -16,31 +16,37 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='batchrun',
             name='location',
-            field=models.ForeignKey(blank=True, db_column='LocationId', null=True, on_delete=django.db.models.deletion.DO_NOTHING, to='location.location'),
+            field=models.ForeignKey(blank=True, db_column='LocationId', null=True,
+                                    on_delete=django.db.models.deletion.DO_NOTHING, to='location.location'),
         ),
         migrations.AddField(
             model_name='relativedistribution',
             name='product',
-            field=models.ForeignKey(db_column='ProdID', on_delete=django.db.models.deletion.DO_NOTHING, related_name='relative_distributions', to='product.product'),
+            field=models.ForeignKey(db_column='ProdID', on_delete=django.db.models.deletion.DO_NOTHING,
+                                    related_name='relative_distributions', to='product.product'),
         ),
         migrations.AddField(
             model_name='relativeindex',
             name='location',
-            field=models.ForeignKey(blank=True, db_column='LocationId', null=True, on_delete=django.db.models.deletion.DO_NOTHING, related_name='relative_indexes', to='location.location'),
+            field=models.ForeignKey(blank=True, db_column='LocationId', null=True,
+                                    on_delete=django.db.models.deletion.DO_NOTHING, related_name='relative_indexes', to='location.location'),
         ),
         migrations.AddField(
             model_name='relativeindex',
             name='product',
-            field=models.ForeignKey(db_column='ProdID', on_delete=django.db.models.deletion.DO_NOTHING, to='product.product'),
+            field=models.ForeignKey(
+                db_column='ProdID', on_delete=django.db.models.deletion.DO_NOTHING, to='product.product'),
         ),
         migrations.AlterField(
             model_name='relativedistribution',
             name='care_type',
-            field=models.CharField(choices=[('B', 'Both'), ('I', 'In-Patient'), ('O', 'Out-Patient')], db_column='DistrCareType', max_length=1),
+            field=models.CharField(choices=[('B', 'Both'), ('I', 'In-Patient'),
+                                   ('O', 'Out-Patient')], db_column='DistrCareType', max_length=1),
         ),
         migrations.AlterField(
             model_name='relativedistribution',
             name='type',
-            field=models.SmallIntegerField(choices=[(12, 'Month'), (4, 'Quarter'), (1, 'Year')], db_column='DistrType'),
+            field=models.SmallIntegerField(
+                choices=[(12, 'Month'), (4, 'Quarter'), (1, 'Year')], db_column='DistrType'),
         ),
     ]

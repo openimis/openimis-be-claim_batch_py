@@ -5,7 +5,8 @@ def create_test_rel_distr_range(product_id, dist_type, care_type, percent, custo
     if custom_props is None:
         custom_props = {}
     else:
-        custom_props = {k: v for k, v in custom_props.items() if hasattr(RelativeDistribution, k)}
+        custom_props = {k: v for k, v in custom_props.items(
+        ) if hasattr(RelativeDistribution, k)}
     if dist_type == 1:
         r = range(1, 13)
     elif dist_type == 4:
@@ -25,4 +26,3 @@ def create_test_rel_distr_range(product_id, dist_type, care_type, percent, custo
                 **custom_props
             }
         )
-
