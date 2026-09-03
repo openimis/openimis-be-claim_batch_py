@@ -4,12 +4,13 @@ from django.db import migrations, models
 import django.db.models.deletion
 from claim_batch.services import ProcessBatchSubmit, ProcessBatchService
 from concurrent.futures import ThreadPoolExecutor
+from core.utils import filter_validity
 
 
 def add_previous_batch_run_catpitaion_payment_entries(apps, schema_editor):
     BatchRun = apps.get_model('claim_batch', 'BatchRun')
     service = ProcessBatchService(None)
-    batch_runs = BatchRun.objects.filter(*BatchRun.filter_validity()).values(
+    batch_runs = BatchRun.objects.filter(*filter_validity()).values(
         'location', 'run_year', 'run_month').all()
     with ThreadPoolExecutor(max_workers=30) as executor:
         for run in batch_runs:
