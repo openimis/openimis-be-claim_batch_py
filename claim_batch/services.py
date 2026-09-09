@@ -205,6 +205,26 @@ def process_batch(audit_user_id, scope=None, period=None, year=None, location_id
 
 def do_process_batch(audit_user_id, scope, products, end_date, created_run):
     # As we update claims, we add the claims not in relative pricing and then update the status
+
+    period = end_date.month
+    year = end_date.year
+    logger.debug("do_process_batch location %s for %s/%s",
+                 location_id, period, year)
+
+    from core.utils import TimeUtils
+    created_run = BatchRun.objects.create(location_id=location_id, run_year=year, run_month=period,
+                                          run_date=TimeUtils.now(), audit_user_id=audit_user_id,
+                                          *BatchRun.filter_validity())
+    logger.debug(f"do_process_batch created run: {created_run.id}")
+
+    # 0 prepare the batch run :  does it really make sense
+    # per location ? (Ideally per pool but the notion doesn't exist yet)
+    # 0.1 get all product concerned, all product that have are configured for the location
+    # period_quarter = period - 2 if period % 3 == 0 else 0
+    # period_sem = period - 5 if period % 6 == 0 else 0
+
+    products = get_product_queryset(end_date, location_id)
+    # 1 per product (Ideally per pool but the notion doesn't exist yet)
     if products:
         product_list = _as_product_list(products)
         logger.debug(
