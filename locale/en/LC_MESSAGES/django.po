@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: PACKAGE VERSION\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2020-05-27 22:47+0000\n"
+"POT-Creation-Date: 2026-09-17 16:48+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -17,11 +17,40 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 "Plural-Forms: nplurals=2; plural=(n != 1);\n"
 
-#: claim_batch/services.py:765
-msgid "claim_batch.reports.nodata"
-msgstr "No data in report"
+#: claim_batch/models.py:71
+msgid "Month"
+msgstr ""
 
-#: claim_batch/views.py:26 claim_batch/schema.py:101 claim_batch/schema.py:130
-#: claim_batch/schema.py:136 claim_batch/schema.py:177
+#: claim_batch/models.py:71
+msgid "Quarter"
+msgstr ""
+
+#: claim_batch/models.py:71
+msgid "Year"
+msgstr ""
+
+#: claim_batch/models.py:73
+msgid "Both"
+msgstr ""
+
+#: claim_batch/models.py:73
+msgid "In-Patient"
+msgstr ""
+
+#: claim_batch/models.py:73
+msgid "Out-Patient"
+msgstr ""
+
+#: claim_batch/schema.py:110 claim_batch/schema.py:139
+#: claim_batch/schema.py:143 claim_batch/schema.py:212 claim_batch/views.py:29
 msgid "unauthorized"
 msgstr "User not authorized for this operation"
+
+#: claim_batch/services.py:299
+#, python-format
+msgid "Batch run %s failed %s: %s"
+msgstr ""
+
+#: claim_batch/services.py:835
+msgid "claim_batch.reports.nodata"
+msgstr "No data in report"
