@@ -4,7 +4,12 @@ MODULE_NAME = "claim_batch"
 
 DEFAULT_CFG = {
     "gql_query_batch_runs_perms": ["111102"],
-    "gql_query_relative_indexes_perms": [],
+    # Was [] - and `has_perms([])` returns True, so this query was open to every
+    # authenticated user. Aliased onto gql_query_batch_runs_perms (111102), the read right for the
+    # entity it belongs to: no new id and no role to grant, and it narrows the
+    # query from everyone to that entity's readers. A dedicated id would narrow it
+    # further and is the better end state.
+    "gql_query_relative_indexes_perms": ["111102"],
     "gql_mutation_process_batch_perms": ["111101"],
     "reports_capitation_payment_perms": ["131218"],
     "account_preview_perms": ["111103"]
