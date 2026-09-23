@@ -5,14 +5,14 @@ from core.rights_declaration import RightsDeclaration
 MODULE_NAME = "claim_batch"
 
 
-# Droits, par entite puis par action.
+# Rights, by entity then by action.
 #
-# `relativeIndex.query` partage 111102 avec la lecture des traitements par lot : les
-# index relatifs sont une vue sur ces traitements, pas une entite a droit propre - ce
-# droit valait [] jusqu'ici, donc ouvert a tous.
+# `relativeIndex.query` shares 111102 with reading batch runs: relative indexes are a
+# view over those runs, not an entity with a right of its own - this right held []
+# until now, and so was open to everybody.
 #
-# `capitationPaymentReport` porte 131218, identifiant du module report pour le meme
-# etat : une reutilisation, pas une collision.
+# `capitationPaymentReport` carries 131218, the report module's identifier for the same
+# statement: a reuse, not a collision.
 DJANGO_PERMS = {
     "batchRun": {
         "query": ("claim_batch.view_batchrun", 111102),
@@ -55,9 +55,9 @@ DEFAULT_CFG = {
 class ClaimBatchConfig(AppConfig):
     name = MODULE_NAME
 
-    # Droits: constantes, plus surchargeables. Ils ne passent plus par le
-    # DEFAULT_CFG ni par ready(): `ModuleConfiguration.get_or_default` ignore
-    # desormais toute cle `_perms` stockee en base.
+    # Rights: constants, no longer overridable. They go neither through DEFAULT_CFG
+    # nor through ready(): `ModuleConfiguration.get_or_default` now ignores any
+    # `_perms` key stored in the database.
     gql_query_batch_runs_perms = RIGHTS.perms("batchRun", "query")
     gql_query_relative_indexes_perms = RIGHTS.perms("relativeIndex", "query")
     gql_mutation_process_batch_perms = RIGHTS.perms("batchRun", "process")

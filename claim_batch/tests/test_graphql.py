@@ -161,7 +161,7 @@ class ClaimBactchGQLTestCase(openIMISGraphQLTestCase):
       processBatch(
         input: {{
           clientMutationId: "82365744-dc14-456e-bac6-109925bf8c7f"
-          clientMutationLabel: "Évaluation par lots - National, April 2019"
+          clientMutationLabel: "Batch valuation - National, April 2019"
 
           month: {self.month}
           year: {self.year}
