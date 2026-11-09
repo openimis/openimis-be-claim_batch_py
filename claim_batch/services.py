@@ -14,7 +14,7 @@ from django.utils.translation import gettext as _
 
 from calculation.services import get_calculation_object
 from claim.models import ClaimItem, Claim, ClaimService
-from claim_batch.models import BatchRun, RelativeIndex
+from claim_batch.models import BatchRun, RelativeIndex, ProgramLocationScope
 from contribution.models import Premium
 from contribution_plan.models import PaymentPlan
 from invoice.models import BillPayment, InvoicePayment
@@ -127,6 +127,9 @@ def get_products_for_batch_run(batch_run, end_date):
     if isinstance(scope, Location):
         return get_product_queryset(end_date, scope.id)
 
+    if isinstance(scope, ProgramLocationScope):
+        return get_product_queryset(end_date, scope.location_id, scope.program_id)
+
     # 3. Products already stored in json_ext (set by previous run or receiver)
     prods = batch_run.products
     if prods:
@@ -208,22 +211,8 @@ def do_process_batch(audit_user_id, scope, products, end_date, created_run):
 
     period = end_date.month
     year = end_date.year
-    logger.debug("do_process_batch location %s for %s/%s",
-                 location_id, period, year)
-
-    from core.utils import TimeUtils
-    created_run = BatchRun.objects.create(location_id=location_id, run_year=year, run_month=period,
-                                          run_date=TimeUtils.now(), audit_user_id=audit_user_id,
-                                          *BatchRun.filter_validity())
-    logger.debug(f"do_process_batch created run: {created_run.id}")
-
-    # 0 prepare the batch run :  does it really make sense
-    # per location ? (Ideally per pool but the notion doesn't exist yet)
-    # 0.1 get all product concerned, all product that have are configured for the location
-    # period_quarter = period - 2 if period % 3 == 0 else 0
-    # period_sem = period - 5 if period % 6 == 0 else 0
-
-    products = get_product_queryset(end_date, location_id)
+    logger.debug("do_process_batch scope %s for %s/%s", scope, period, year)
+    products = _as_product_list(products)
     # 1 per product (Ideally per pool but the notion doesn't exist yet)
     if products:
         product_list = _as_product_list(products)
@@ -236,6 +225,8 @@ def do_process_batch(audit_user_id, scope, products, end_date, created_run):
         }
         if created_run.scope:
             work_data["scope"] = created_run.scope
+        if isinstance(scope, ProgramLocationScope):
+            work_data["program_id"] = scope.program_id
         allocated_contribution = None
         # 1.2 get all the payment plan per product
         payment_plans = []
@@ -357,7 +348,8 @@ def update_work_data(work_data, status, start_date, end_date, allocated_contribu
     work_data["contributions"] = get_contribution_queryset(
         products, start_date, end_date)
     work_data['claims'] = get_claim_queryset(
-        products, status, work_data.get('created_run'), start_date, end_date)
+        products, status, work_data.get('created_run'), start_date, end_date,
+        work_data.get("program_id"))
     work_data['bill_payments'] = get_bill_payment_queryset(
         products, start_date, end_date)
 
@@ -424,11 +416,11 @@ def get_services_queryset(products, status, batch_run, start_date, end_date):
     ).order_by('claim__health_facility').order_by('claim')
 
 
-def get_claim_queryset(products, status, batch_run, start_date, end_date):
+def get_claim_queryset(products, status, batch_run, start_date, end_date, program_id=None):
     products = _as_product_list(products)
     if not products:
         return Claim.objects.none()
-    subquery = Claim.objects.filter(
+    claim_filter = Claim.objects.filter(
         Q(items__product__in=products) | Q(services__product__in=products),
         Q(batch_run__isnull=True) | Q(batch_run=batch_run),
         Q(Q(date_to__lt=end_date) | (
@@ -436,7 +428,10 @@ def get_claim_queryset(products, status, batch_run, start_date, end_date):
         *Claim.filter_validity(),
         status=status,
         process_stamp__isnull=False,
-    ).distinct().values('id')
+    )
+    if program_id is not None:
+        claim_filter = claim_filter.filter(program_id=program_id)
+    subquery = claim_filter.distinct().values('id')
     return Claim.objects.filter(id__in=Subquery(subquery))
 
 
@@ -452,7 +447,7 @@ def get_allocated_contribution_queryset(products, start_date, end_date):
     ).select_related('policy')
 
 
-def get_product_queryset(end_date, location_id):
+def get_product_queryset(end_date, location_id, program_id=None):
     queryset = Product.objects.filter(
         Q(date_to__gte=end_date) | Q(date_to__isnull=True),
         *Product.filter_validity(),
@@ -460,9 +455,12 @@ def get_product_queryset(end_date, location_id):
 
     )
     if location_id is not None:
-        return queryset.filter(location_id=location_id)
-    else:
-        return queryset.filter(location_id__isnull=True)
+        queryset = queryset.filter(location_id=location_id)
+    elif program_id is None:
+        queryset = queryset.filter(location_id__isnull=True)
+    if program_id is not None:
+        queryset = queryset.filter(program_id=program_id)
+    return queryset
 
 
 def get_contribution_queryset(products, start_date, end_date):

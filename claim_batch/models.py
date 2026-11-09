@@ -10,10 +10,32 @@ from location import models as location_models
 from location.models import HealthFacility
 from product import models as product_models
 from product.models import Product
+from program.models import Program
 from core import models as core_models
 from core.utils import uuidv7
 
 _location_cs = None
+
+
+class ProgramLocationScope(models.Model):
+    """Generic BatchRun scope combining a required Program and optional Location."""
+    id = models.AutoField(primary_key=True)
+    scope_key = models.CharField(max_length=64, unique=True)
+    program = models.ForeignKey(Program, models.DO_NOTHING)
+    location = models.ForeignKey(
+        location_models.Location, models.DO_NOTHING, blank=True, null=True
+    )
+
+    class Meta:
+        db_table = "tblClaimBatchProgramLocationScope"
+
+    @classmethod
+    def get_or_create_scope(cls, program_id, location_id=None):
+        key = f"{program_id}:{location_id if location_id is not None else 'national'}"
+        return cls.objects.get_or_create(
+            scope_key=key,
+            defaults={"program_id": program_id, "location_id": location_id},
+        )[0]
 
 
 def get_location_content_type_id():
