@@ -389,6 +389,8 @@ class Query(graphene.ObjectType):
         orderBy=graphene.List(of_type=graphene.String),
         program_id=graphene.Int(),
         location_id=graphene.Int(),
+        location_uuid=graphene.String(),
+        location_isnull=graphene.Boolean(),
         # Unconstrained scope__* filters (scope_Code, scope_Name_Icontains, etc.).
         # We generate proper graphene argument objects here (not raw filter specs)
         # so that graphene can sort/process the extra args without error.
@@ -581,12 +583,22 @@ class Query(graphene.ObjectType):
         qs = BatchRun.objects.all()
         program_id = kwargs.get("program_id")
         location_id = kwargs.get("location_id")
-        if program_id is not None or location_id is not None:
+        location_uuid = kwargs.get("location_uuid")
+        location_isnull = kwargs.get("location_isnull")
+        if location_uuid:
+            location_id = Location.objects.filter(uuid=location_uuid).values_list("id", flat=True).first()
+            if location_id is None:
+                return qs.none()
+        if program_id is not None or location_id is not None or location_isnull is not None:
             scope_ids = ProgramLocationScope.objects.all()
             if program_id is not None:
                 scope_ids = scope_ids.filter(program_id=program_id)
             if location_id is not None:
                 scope_ids = scope_ids.filter(location_id=location_id)
+            elif location_isnull is True:
+                scope_ids = scope_ids.filter(location_id__isnull=True)
+            elif location_isnull is False:
+                scope_ids = scope_ids.filter(location_id__isnull=False)
             qs = qs.filter(
                 scope_type=ContentType.objects.get_for_model(ProgramLocationScope),
                 scope_id__in=[str(pk) for pk in scope_ids.values_list("id", flat=True)],
