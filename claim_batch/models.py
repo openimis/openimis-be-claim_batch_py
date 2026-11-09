@@ -1,20 +1,58 @@
 import uuid
 
 from core import fields
-from core import models as core_models
+
+from django.contrib.contenttypes.fields import GenericForeignKey
+from django.contrib.contenttypes.models import ContentType
 from django.db import models
 from django.utils.translation import gettext_lazy
 from location import models as location_models
 from location.models import HealthFacility
 from product import models as product_models
 from product.models import Product
+from core import models as core_models
+from core.utils import uuidv7
+
+_location_cs = None
 
 
-class BatchRun(core_models.VersionedModel):
+def get_location_content_type_id():
+    global _location_cs
+    if not _location_cs:
+        _location_cs = ContentType.objects.filter(
+            app_label='location',
+            model='location'
+        ).first()
+
+    return _location_cs.id if _location_cs else None
+
+
+class BatchRun(core_models.OpenIMISModel):
     id = models.AutoField(db_column='RunID', primary_key=True)
-    location = models.ForeignKey(
-        location_models.Location, models.DO_NOTHING,
-        db_column='LocationId', blank=True, null=True)
+    uuid = models.UUIDField(
+        unique=True,
+        db_column="UUID",
+        default=uuidv7,
+        editable=False,
+        null=True,
+    )
+    # Generic scope (preferred): Location, Product or custom via signal.
+    # The migration sets ScopeType defaulting to Location's ContentType.
+    scope_type = models.ForeignKey(
+        ContentType,
+        db_column="ScopeType",
+        on_delete=models.DO_NOTHING,
+        unique=False,
+        null=True,
+        default=get_location_content_type_id
+    )
+
+    scope_id = models.CharField(
+        db_column="ScopeId",
+        max_length=255,
+        blank=True,
+        null=True)
+    scope = GenericForeignKey('scope_type', 'scope_id')
     run_date = fields.DateTimeField(db_column='RunDate')
     audit_user_id = models.IntegerField(db_column='AuditUserID')
     run_year = models.IntegerField(db_column='RunYear')
@@ -24,8 +62,88 @@ class BatchRun(core_models.VersionedModel):
         managed = True
         db_table = 'tblBatchRun'
 
+    # --- Products stored in json_ext (no dedicated m2m / list column) ---
+    @property
+    def products(self):
+        """Return list of Product instances.
+        Priority:
+        1. If scope is a Product -> return it directly.
+        2. Products stored in json_ext['products'] (list of ids or dicts).
+        """
+        # Direct Product scope takes precedence
+        if self.scope and isinstance(self.scope, Product):
+            return [self.scope]
 
-class RelativeIndex(core_models.VersionedModel):
+        if not self.json_ext:
+            return []
+        raw = self.json_ext.get('products') or []
+        if not raw:
+            return []
+        ids = []
+        for item in raw:
+            if isinstance(item, dict):
+                pid = item.get('id') or item.get('pk') or item.get('product_id')
+            else:
+                pid = item
+            if pid:
+                ids.append(pid)
+        if not ids:
+            return []
+        return list(Product.objects.filter(id__in=ids))
+
+    @products.setter
+    def products(self, value):
+        """Serialize list of Products (or ids) into json_ext['products']."""
+        if not value:
+            serialised = []
+        else:
+            serialised = []
+            for p in value:
+                if hasattr(p, 'id'):  # Product instance or similar
+                    serialised.append({
+                        'id': p.id,
+                        'code': getattr(p, 'code', None),
+                        'name': getattr(p, 'name', None),
+                    })
+                else:
+                    serialised.append({'id': p})
+        if self.json_ext is None:
+            self.json_ext = {}
+        self.json_ext['products'] = serialised
+
+    @property
+    def location(self):
+        """Compatibility property.
+        Returns the scope object if it is a Location (for legacy code paths).
+        """
+        if self.scope and isinstance(self.scope, location_models.Location):
+            return self.scope
+        return None
+
+    @location.setter
+    def location(self, value):
+        """Allow assignment for legacy paths; delegates to scope."""
+        self.scope = value
+
+    def save(self, *args, **kwargs):
+        # Ensure json_ext is a dict
+        if self.json_ext is None:
+            self.json_ext = {}
+
+        # Sync scope <-> legacy location when one is set
+        if self.scope and not self.scope_type:
+            try:
+                self.scope_type = ContentType.objects.get_for_model(self.scope.__class__)
+                self.scope_id = str(getattr(self.scope, 'pk', self.scope))
+            except Exception:
+                pass
+        if (not self.scope) and self.location:
+            self.scope = self.location
+
+        super().save(*args, **kwargs)
+
+
+class RelativeIndex(core_models.OpenIMISModel):
     id = models.AutoField(db_column='RelIndexID', primary_key=True)
     product = models.ForeignKey(
         product_models.Product, models.DO_NOTHING, db_column='ProdID')
@@ -37,10 +155,22 @@ class RelativeIndex(core_models.VersionedModel):
     rel_index = models.DecimalField(
         db_column='RelIndex', max_digits=18, decimal_places=4, blank=True, null=True)
     audit_user_id = models.IntegerField(db_column='AuditUserID')
-    location = models.ForeignKey(
-        location_models.Location, models.DO_NOTHING, db_column='LocationId', blank=True, null=True,
-        related_name="relative_indexes"
+    # Generic scope (preferred): Location, Product or custom via signal.
+    # The migration sets ScopeType defaulting to Location's ContentType.
+    scope_type = models.ForeignKey(
+        ContentType,
+        db_column="ScopeType",
+        on_delete=models.DO_NOTHING,
+        unique=False,
+        null=True,
+        default=get_location_content_type_id
     )
+
+    scope_id = models.CharField(
+        db_column="ScopeId",
+        max_length=255,
+        blank=True,
+        null=True)
 
     class Meta:
         managed = True
