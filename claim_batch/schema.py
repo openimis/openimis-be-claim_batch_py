@@ -16,10 +16,11 @@ from location.schema import LocationGQLType
 from location.models import Location
 from product.models import Product
 
-from .models import BatchRun, RelativeIndex
+from .models import BatchRun, RelativeIndex, ProgramLocationScope
 from .services import ProcessBatchSubmit, ProcessBatchService, _resolve_scope
 from .apps import ClaimBatchConfig
 from . import signals
+from program.schema import ProgramGQLType
 from django.utils.translation import gettext as _
 
 
@@ -45,9 +46,23 @@ def _get_scope_model_registry():
     registry = {
         Location: LocationGQLType,
         Product: ProductGQLType,
+        ProgramLocationScope: ProgramLocationScopeGQLType,
     }
     signals.batch_run_register_scope_model.send(sender=BatchRun, registry=registry)
     return registry
+
+
+class ProgramLocationScopeGQLType(DjangoObjectType):
+    class Meta:
+        model = ProgramLocationScope
+        fields = ("id", "scope_key", "program", "location")
+        filter_fields = {
+            "id": ["exact"],
+            "program": ["exact"],
+            "program__id": ["exact"],
+            "location": ["exact", "isnull"],
+            "location__id": ["exact"],
+        }
 
 
 def get_gql_type_for_scope(scope_obj):
@@ -108,6 +123,9 @@ def get_scope_target_filter_fields():
 
 
 class BatchRunGQLType(DjangoObjectType):
+    program = graphene.Field(ProgramGQLType)
+    location = graphene.Field(LocationGQLType)
+
     # Scope is a GenericForeignKey (Location, Product, or custom via signal).
     scope = graphene.JSONString()
     scope_id = graphene.String()
@@ -132,6 +150,18 @@ class BatchRunGQLType(DjangoObjectType):
             # then restrict via scope_type + scope_id__in.
         }
         connection_class = ExtendedConnection
+
+    @staticmethod
+    def resolve_program(root, info):
+        scope = root.scope
+        return scope.program if isinstance(scope, ProgramLocationScope) else None
+
+    @staticmethod
+    def resolve_location(root, info):
+        scope = root.scope
+        if isinstance(scope, ProgramLocationScope):
+            return scope.location
+        return root.location
 
     @staticmethod
     def resolve_scope(root, info):
@@ -281,6 +311,7 @@ class ProcessBatchMutation(OpenIMISMutation):
     class Input(OpenIMISMutation.Input):
         # Legacy support
         location_id = graphene.Int(required=False)
+        program_id = graphene.Int(required=False)
         # New scope (GFK) support.
         # scope_type can be "Location", "Product", "location.Location", "product.Product" or the ContentType id.
         scope_id = graphene.String(required=False)
@@ -337,6 +368,10 @@ class ProcessBatchMutation(OpenIMISMutation):
                 # Final legacy fallback (old location id behavior)
                 scope = _resolve_scope(scope_id)
 
+        if data.get("program_id") is not None:
+            scope = ProgramLocationScope.get_or_create_scope(
+                data["program_id"], data.get("location_id")
+            )
         submit = ProcessBatchSubmit(
             location_id=data.get("location_id"),
             scope=scope,
@@ -352,6 +387,10 @@ class Query(graphene.ObjectType):
     batch_runs = OrderedDjangoFilterConnectionField(
         BatchRunGQLType,
         orderBy=graphene.List(of_type=graphene.String),
+        program_id=graphene.Int(),
+        location_id=graphene.Int(),
+        location_uuid=graphene.String(),
+        location_isnull=graphene.Boolean(),
         # Unconstrained scope__* filters (scope_Code, scope_Name_Icontains, etc.).
         # We generate proper graphene argument objects here (not raw filter specs)
         # so that graphene can sort/process the extra args without error.
@@ -542,6 +581,28 @@ class Query(graphene.ObjectType):
         # location__* and product__* are handled here by turning them into
         # scope_type + scope_id__in conditions (because scope is a GFK).
         qs = BatchRun.objects.all()
+        program_id = kwargs.get("program_id")
+        location_id = kwargs.get("location_id")
+        location_uuid = kwargs.get("location_uuid")
+        location_isnull = kwargs.get("location_isnull")
+        if location_uuid:
+            location_id = Location.objects.filter(uuid=location_uuid).values_list("id", flat=True).first()
+            if location_id is None:
+                return qs.none()
+        if program_id is not None or location_id is not None or location_isnull is not None:
+            scope_ids = ProgramLocationScope.objects.all()
+            if program_id is not None:
+                scope_ids = scope_ids.filter(program_id=program_id)
+            if location_id is not None:
+                scope_ids = scope_ids.filter(location_id=location_id)
+            elif location_isnull is True:
+                scope_ids = scope_ids.filter(location_id__isnull=True)
+            elif location_isnull is False:
+                scope_ids = scope_ids.filter(location_id__isnull=False)
+            qs = qs.filter(
+                scope_type=ContentType.objects.get_for_model(ProgramLocationScope),
+                scope_id__in=[str(pk) for pk in scope_ids.values_list("id", flat=True)],
+            )
         qs = self._apply_scope_filters(qs, kwargs)
         return qs
 

@@ -1,6 +1,7 @@
 import calendar
 import datetime
 import logging
+from decimal import Decimal
 import pandas as pd
 from django.contrib.admin.options import get_content_type_for_model
 from django.contrib.contenttypes.models import ContentType
@@ -13,11 +14,11 @@ from django.db.models.functions import Coalesce, Cast
 from django.utils.translation import gettext as _
 
 from calculation.services import get_calculation_object
-from claim.models import ClaimItem, Claim, ClaimService
-from claim_batch.models import BatchRun, RelativeIndex
+from claim.models import ClaimItem, Claim, ClaimService, ClaimDetail
+from claim_batch.models import BatchRun, RelativeIndex, ProgramLocationScope
 from contribution.models import Premium
 from contribution_plan.models import PaymentPlan
-from invoice.models import BillPayment, InvoicePayment
+from invoice.models import Bill, BillItem, BillPayment, InvoicePayment
 from location.models import HealthFacility, Location
 from product.models import Product
 from functools import lru_cache
@@ -27,6 +28,61 @@ from claim.subqueries import (
     update_claim_indexed_remunerated as claim_update_claim_indexed_remunerated
 )
 logger = logging.getLogger(__name__)
+
+FEE_FOR_SERVICE_CALCULATION = "0a1b6d54-eef4-4ee6-ac47-2a99cfa5e9a8"
+
+
+def _decimal_string(value):
+    return format(Decimal(value or 0), "f")
+
+
+def build_rfc_claim_details(claim):
+    """Build item and service detail amounts for the RFC claim invoice payload."""
+    details = []
+    for model, relation, line_type in (
+        (ClaimItem, "item", "item"),
+        (ClaimService, "service", "service"),
+    ):
+        lines = model.objects.filter(
+            claim=claim, *model.filter_validity()
+        ).select_related(relation).order_by("id")
+        for line in lines:
+            medical = getattr(line, relation)
+            submitted_quantity = Decimal(line.qty_provided or 0)
+            configured_rate = Decimal(medical.price or 0)
+            submitted_amount = submitted_quantity * configured_rate
+            approved = line.status == ClaimDetail.STATUS_PASSED
+            approved_quantity = (
+                Decimal(line.qty_approved)
+                if approved and line.qty_approved is not None
+                else submitted_quantity if approved else Decimal(0)
+            )
+            rejected_quantity = max(submitted_quantity - approved_quantity, Decimal(0))
+            validated_rate = Decimal(
+                line.price_valuated if line.price_valuated is not None
+                else line.price_approved if line.price_approved is not None
+                else configured_rate
+            )
+            validated_amount = approved_quantity * validated_rate
+            details.append({
+                "type": line_type,
+                "code": medical.code,
+                "name": medical.name,
+                "rate": _decimal_string(configured_rate),
+                "submitted_quantity": _decimal_string(submitted_quantity),
+                "submitted_amount": _decimal_string(submitted_amount),
+                "approved_quantity": _decimal_string(approved_quantity),
+                "rejected_quantity": _decimal_string(rejected_quantity),
+                "approved_lines": int(approved and approved_quantity > 0),
+                "rejected_lines": int(rejected_quantity > 0),
+                "validated_rate": _decimal_string(validated_rate),
+                "validated_amount": _decimal_string(validated_amount),
+                "non_validated_amount": _decimal_string(abs(submitted_amount - validated_amount)),
+                "status": "approved" if rejected_quantity == 0 else (
+                    "rejected" if approved_quantity == 0 else "partially_approved"
+                ),
+            })
+    return {"claim_details": details}
 
 
 @lru_cache(maxsize=None)
@@ -127,6 +183,12 @@ def get_products_for_batch_run(batch_run, end_date):
     if isinstance(scope, Location):
         return get_product_queryset(end_date, scope.id)
 
+    if isinstance(scope, ProgramLocationScope):
+        products = list(get_product_queryset(end_date, scope.location_id, scope.program_id))
+        batch_run.products = products
+        batch_run.save(update_fields=["json_ext"])
+        return products
+
     # 3. Products already stored in json_ext (set by previous run or receiver)
     prods = batch_run.products
     if prods:
@@ -169,28 +231,29 @@ def process_batch(audit_user_id, scope=None, period=None, year=None, location_id
     )
 
     try:
-        logger.debug("do_process_batch scope=%s for %s/%s", scope, period, year)
+        with transaction.atomic():
+            logger.debug("do_process_batch scope=%s for %s/%s", scope, period, year)
 
-        from core.utils import TimeUtils
-        created_run = BatchRun(
-            run_year=year,
-            run_month=period,
-            run_date=TimeUtils.now(),
-            audit_user_id=audit_user_id,
-            validity_from=TimeUtils.now(),
-            scope=scope,
-        )
-        created_run.save()
-        logger.debug(f"do_process_batch created run: {created_run.id}")
+            from core.utils import TimeUtils
+            created_run = BatchRun(
+                run_year=year,
+                run_month=period,
+                run_date=TimeUtils.now(),
+                audit_user_id=audit_user_id,
+                validity_from=TimeUtils.now(),
+                scope=scope,
+            )
+            created_run.save()
+            logger.debug(f"do_process_batch created run: {created_run.id}")
 
-        products = get_products_for_batch_run(created_run, end_date)
+            products = get_products_for_batch_run(created_run, end_date)
 
-        if products:
-            if isinstance(scope, Location):
-                for product in products:
-                    do_process_batch(audit_user_id, scope, [product], end_date, created_run)
-            else:
-                do_process_batch(audit_user_id, scope, products, end_date, created_run)
+            if products:
+                if isinstance(scope, Location):
+                    for product in products:
+                        do_process_batch(audit_user_id, scope, [product], end_date, created_run)
+                else:
+                    do_process_batch(audit_user_id, scope, products, end_date, created_run)
 
     except (KeyboardInterrupt, SystemExit):
         raise
@@ -208,22 +271,8 @@ def do_process_batch(audit_user_id, scope, products, end_date, created_run):
 
     period = end_date.month
     year = end_date.year
-    logger.debug("do_process_batch location %s for %s/%s",
-                 location_id, period, year)
-
-    from core.utils import TimeUtils
-    created_run = BatchRun.objects.create(location_id=location_id, run_year=year, run_month=period,
-                                          run_date=TimeUtils.now(), audit_user_id=audit_user_id,
-                                          *BatchRun.filter_validity())
-    logger.debug(f"do_process_batch created run: {created_run.id}")
-
-    # 0 prepare the batch run :  does it really make sense
-    # per location ? (Ideally per pool but the notion doesn't exist yet)
-    # 0.1 get all product concerned, all product that have are configured for the location
-    # period_quarter = period - 2 if period % 3 == 0 else 0
-    # period_sem = period - 5 if period % 6 == 0 else 0
-
-    products = get_product_queryset(end_date, location_id)
+    logger.debug("do_process_batch scope %s for %s/%s", scope, period, year)
+    products = _as_product_list(products)
     # 1 per product (Ideally per pool but the notion doesn't exist yet)
     if products:
         product_list = _as_product_list(products)
@@ -236,6 +285,8 @@ def do_process_batch(audit_user_id, scope, products, end_date, created_run):
         }
         if created_run.scope:
             work_data["scope"] = created_run.scope
+        if isinstance(scope, ProgramLocationScope):
+            work_data["program_id"] = scope.program_id
         allocated_contribution = None
         # 1.2 get all the payment plan per product
         payment_plans = []
@@ -308,11 +359,19 @@ def trigger_calculation_based_on_context(
                 calculation = get_calculation_object(payment_plan.calculation)
                 if calculation is not None:
                     try:
-                        rcr = calculation.calculate_if_active_for_object(
-                            payment_plan, context=context,
-                            work_data=work_data, audit_user_id=user_id,
-                            start_date=start_date, end_date=end_date
-                        )
+                        if (
+                            context == "BatchPayment"
+                            and str(payment_plan.calculation) == FEE_FOR_SERVICE_CALCULATION
+                        ):
+                            rcr = create_rfc_fee_for_service_bills(
+                                payment_plan, work_data, user_id
+                            )
+                        else:
+                            rcr = calculation.calculate_if_active_for_object(
+                                payment_plan, context=context,
+                                work_data=work_data, audit_user_id=user_id,
+                                start_date=start_date, end_date=end_date
+                            )
                         if rcr:
                             logger.debug(
                                 "conversion processed for: %s", str(rcr))
@@ -350,14 +409,17 @@ def update_work_data(work_data, status, start_date, end_date, allocated_contribu
     # keep normalized
     work_data["products"] = products
 # 1.3 generate queryset
+    work_data['claims'] = get_claim_queryset(
+        products, status, work_data.get('created_run'), start_date, end_date,
+        work_data.get("program_id"))
     work_data["items"] = get_items_queryset(
-        products, status, work_data.get('created_run'), start_date, end_date)
+        products, status, work_data.get('created_run'), start_date, end_date,
+        work_data['claims'])
     work_data["services"] = get_services_queryset(
-        products, status, work_data.get('created_run'), start_date, end_date)
+        products, status, work_data.get('created_run'), start_date, end_date,
+        work_data['claims'])
     work_data["contributions"] = get_contribution_queryset(
         products, start_date, end_date)
-    work_data['claims'] = get_claim_queryset(
-        products, status, work_data.get('created_run'), start_date, end_date)
     work_data['bill_payments'] = get_bill_payment_queryset(
         products, start_date, end_date)
 
@@ -385,18 +447,21 @@ def get_payment_plan_queryset(products, end_date):
     ).filter(is_deleted=False)
 
 
-def get_items_queryset(products, status, batch_run, start_date, end_date):
+def get_items_queryset(products, status, batch_run, start_date, end_date, claims=None):
     products = _as_product_list(products)
     if not products:
         return ClaimItem.objects.none()
-    subquery = ClaimItem.objects.filter(
+    item_filter = ClaimItem.objects.filter(
         Q(claim__batch_run__isnull=True) | Q(claim__batch_run=batch_run),
         *Claim.filter_validity(prefix='claim__'),
         *ClaimItem.filter_validity(),
         claim__status=status,
         claim__process_stamp__lte=end_date,
         product__in=products
-    ).distinct().values('id')
+    )
+    if claims is not None:
+        item_filter = item_filter.filter(claim__in=claims)
+    subquery = item_filter.distinct().values('id')
 
     return ClaimItem.objects.filter(
         id__in=Subquery(subquery)
@@ -405,18 +470,21 @@ def get_items_queryset(products, status, batch_run, start_date, end_date):
     ).order_by('claim__health_facility').order_by('claim')
 
 
-def get_services_queryset(products, status, batch_run, start_date, end_date):
+def get_services_queryset(products, status, batch_run, start_date, end_date, claims=None):
     products = _as_product_list(products)
     if not products:
         return ClaimService.objects.none()
-    subquery = ClaimService.objects.filter(
+    service_filter = ClaimService.objects.filter(
         Q(claim__batch_run__isnull=True) | Q(claim__batch_run=batch_run),
         *Claim.filter_validity(prefix='claim__'),
         *ClaimService.filter_validity(),
         claim__status=status,
         claim__process_stamp__lte=end_date,
         product__in=products
-    ).distinct().values('id')
+    )
+    if claims is not None:
+        service_filter = service_filter.filter(claim__in=claims)
+    subquery = service_filter.distinct().values('id')
     return ClaimService.objects.filter(
         id__in=Subquery(subquery)
     ).select_related(
@@ -424,19 +492,32 @@ def get_services_queryset(products, status, batch_run, start_date, end_date):
     ).order_by('claim__health_facility').order_by('claim')
 
 
-def get_claim_queryset(products, status, batch_run, start_date, end_date):
+def _lookback_start(end_date):
+    month_index = end_date.year * 12 + end_date.month - 1 - 6
+    year, zero_based_month = divmod(month_index, 12)
+    candidate = datetime.date(year, zero_based_month + 1, 1)
+    return max(candidate, datetime.date(end_date.year, 1, 1))
+
+
+def get_claim_queryset(products, status, batch_run, start_date, end_date, program_id=None):
     products = _as_product_list(products)
     if not products:
         return Claim.objects.none()
-    subquery = Claim.objects.filter(
+    period_end = end_date - datetime.timedelta(days=1)
+    cutoff = batch_run.run_date if batch_run is not None else end_date
+    claim_filter = Claim.objects.filter(
         Q(items__product__in=products) | Q(services__product__in=products),
         Q(batch_run__isnull=True) | Q(batch_run=batch_run),
-        Q(Q(date_to__lt=end_date) | (
-            Q(date_to__isnull=True) & Q(date_from__lt=end_date))),
+        date_to__gte=_lookback_start(period_end),
+        date_to__lte=period_end,
+        process_stamp__lte=cutoff,
         *Claim.filter_validity(),
         status=status,
         process_stamp__isnull=False,
-    ).distinct().values('id')
+    )
+    if program_id is not None:
+        claim_filter = claim_filter.filter(program_id=program_id)
+    subquery = claim_filter.distinct().values('id')
     return Claim.objects.filter(id__in=Subquery(subquery))
 
 
@@ -452,7 +533,94 @@ def get_allocated_contribution_queryset(products, start_date, end_date):
     ).select_related('policy')
 
 
-def get_product_queryset(end_date, location_id):
+def create_rfc_fee_for_service_bills(payment_plan, work_data, audit_user_id):
+    """Create RFC claim Bills grouped by health facility and service month."""
+    from calcrule_third_party_payment.converters import (
+        ClaimsToBillConverter, ClaimToBillItemConverter,
+    )
+    from core.models import User
+    from invoice.services import BillService
+
+    batch_run = work_data["created_run"]
+    products = _as_product_list(work_data.get("products"))
+    if not products:
+        return "no products for fee-for-service batch"
+    product = products[0]
+    claims = work_data["claims"].filter(
+        batch_run=batch_run,
+        health_facility__isnull=False,
+        date_to__isnull=False,
+    )
+    user = User.objects.filter(i_user__id=audit_user_id).first()
+    if user is None:
+        raise ValueError("Batch audit user does not map to an openIMIS User")
+
+    groups = claims.values(
+        "health_facility_id", "date_to__year", "date_to__month"
+    ).distinct().order_by("date_to__year", "date_to__month", "health_facility_id")
+    created = []
+    claim_content_type = ContentType.objects.get_for_model(Claim)
+    program_id = getattr(batch_run.scope, "program_id", None)
+    for group in groups:
+        service_year = group["date_to__year"]
+        service_month = group["date_to__month"]
+        grouped_claims = claims.filter(
+            health_facility_id=group["health_facility_id"],
+            date_to__year=service_year,
+            date_to__month=service_month,
+        ).order_by("id")
+        first_claim = grouped_claims.first()
+        bill_data = ClaimsToBillConverter.to_bill_obj(grouped_claims, product)
+        service_period = f"{service_year:04d}-{service_month:02d}"
+        processing_period = f"{batch_run.run_year:04d}-{batch_run.run_month:02d}"
+        bill_data["code"] = (
+            f"IV-{product.code}-{first_claim.health_facility.code}-"
+            f"{service_period}-R{batch_run.id}"
+        )
+        bill_data["json_ext"] = {
+            "program_id": program_id,
+            "service_month": service_period,
+            "processing_month": processing_period,
+            "supplementary": service_period != processing_period,
+            "run_at": batch_run.run_date.isoformat(),
+            "batch_run_id": batch_run.id,
+        }
+        bill_lines = []
+        claim_ids = list(grouped_claims.values_list("id", flat=True))
+        for claim in grouped_claims:
+            line = ClaimToBillItemConverter.to_bill_line_item_obj(claim)
+            line["details"] = build_rfc_claim_details(claim)
+            bill_lines.append(line)
+            ClaimsToBillConverter.build_amounts(line, bill_data)
+        result = BillService.bill_create(convert_results={
+            "bill_data": bill_data,
+            "bill_data_line": bill_lines,
+            "type_conversion": "rfc grouped claims-bill",
+            "user": user,
+        })
+        persisted_bill = Bill.objects.filter(
+            code=bill_data["code"],
+            subject_type=bill_data["subject_type"],
+            subject_id=str(batch_run.id),
+            is_deleted=False,
+        ).first()
+        if persisted_bill is None:
+            raise RuntimeError(f"Bill creation failed for {service_period}: {result}")
+        persisted_lines = BillItem.objects.filter(
+            bill_id=persisted_bill.id,
+            line_type=claim_content_type,
+            line_id__in=[str(value) for value in claim_ids],
+            is_deleted=False,
+        ).count()
+        if persisted_lines != len(claim_ids):
+            raise RuntimeError(
+                f"Bill {persisted_bill.id} persisted {persisted_lines}/{len(claim_ids)} claim lines"
+            )
+        created.append(str(persisted_bill.id))
+    return f"created {len(created)} RFC claim Bills"
+
+
+def get_product_queryset(end_date, location_id, program_id=None):
     queryset = Product.objects.filter(
         Q(date_to__gte=end_date) | Q(date_to__isnull=True),
         *Product.filter_validity(),
@@ -460,9 +628,12 @@ def get_product_queryset(end_date, location_id):
 
     )
     if location_id is not None:
-        return queryset.filter(location_id=location_id)
-    else:
-        return queryset.filter(location_id__isnull=True)
+        queryset = queryset.filter(location_id=location_id)
+    elif program_id is None:
+        queryset = queryset.filter(location_id__isnull=True)
+    if program_id is not None:
+        queryset = queryset.filter(program_id=program_id)
+    return queryset
 
 
 def get_contribution_queryset(products, start_date, end_date):
