@@ -7,7 +7,9 @@ from graphene import ObjectType
 from graphene_django import DjangoObjectType
 from graphene_django.filter import DjangoFilterConnectionField
 from product.schema import ProductGQLType
+from location.models import LocationManager
 from location.schema import LocationGQLType
+from core.gql import ScopedQuerysetMixin
 from .models import BatchRun, RelativeIndex
 from .services import ProcessBatchSubmit, ProcessBatchService
 from .apps import ClaimBatchConfig
@@ -15,7 +17,7 @@ from django.utils.translation import gettext as _
 from django.conf import settings
 
 
-class BatchRunGQLType(DjangoObjectType):
+class BatchRunGQLType(ScopedQuerysetMixin, DjangoObjectType):
     class Meta:
         model = BatchRun
         interfaces = (graphene.relay.Node,)
@@ -79,7 +81,7 @@ class BatchRunSummaryConnection(graphene.Connection):
         return len(self.iterable)
 
 
-class RelativeIndexGQLType(DjangoObjectType):
+class RelativeIndexGQLType(ScopedQuerysetMixin, DjangoObjectType):
     class Meta:
         model = RelativeIndex
         interfaces = (graphene.relay.Node,)
@@ -137,9 +139,16 @@ class Query(graphene.ObjectType):
     def resolve_batch_runs(self, info, **kwargs):
         if not info.context.user.has_perms(ClaimBatchConfig.gql_query_batch_runs_perms):
             raise PermissionDenied(_("unauthorized"))
+        # Row security comes from BatchRunGQLType (ScopedQuerysetMixin).
+        return BatchRun.objects.all()
 
     def resolve_batch_runs_summaries(self, info, **kwargs):
         if not info.context.user.has_perms(ClaimBatchConfig.gql_query_batch_runs_perms):
+            raise PermissionDenied(_("unauthorized"))
+        # The raw SQL below bypasses row security: a region or district
+        # outside the user's scope is refused here instead.
+        location_id = kwargs.get('accountDistrict') or kwargs.get('accountRegion')
+        if location_id and not LocationManager().is_allowed(info.context.user, [location_id]):
             raise PermissionDenied(_("unauthorized"))
         sql_params, params = batchRunSummaryFilter(**kwargs)
         if settings.MSSQL:
@@ -210,6 +219,8 @@ class Query(graphene.ObjectType):
     def resolve_relative_indexes(self, info, **kwargs):
         if not info.context.user.has_perms(ClaimBatchConfig.gql_query_relative_indexes_perms):
             raise PermissionDenied(_("unauthorized"))
+        # Row security comes from RelativeIndexGQLType (ScopedQuerysetMixin).
+        return RelativeIndex.objects.all()
 
 
 class Mutation(graphene.ObjectType):
