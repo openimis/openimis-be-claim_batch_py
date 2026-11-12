@@ -7,6 +7,8 @@ from django.contrib.contenttypes.models import ContentType
 
 import core
 
+from django.conf import settings
+from django.core.exceptions import PermissionDenied
 from django.db import connection, transaction
 from django.db.models import Value, F, Q, Subquery, TextField
 from django.db.models.functions import Coalesce, Cast
@@ -18,7 +20,8 @@ from claim_batch.models import BatchRun, RelativeIndex
 from contribution.models import Premium
 from contribution_plan.models import PaymentPlan
 from invoice.models import BillPayment, InvoicePayment
-from location.models import HealthFacility, Location
+from location.apps import LocationConfig
+from location.models import HealthFacility, Location, LocationManager
 from product.models import Product
 from functools import lru_cache
 from claim.subqueries import (
@@ -58,12 +61,40 @@ class ProcessBatchSubmitError(Exception):
         return "ProcessBatchSubmitError %s: %s" % (self.code, self.msg)
 
 
+def has_national_scope(user):
+    """True when ``user`` is not narrowed to some districts.
+
+    Mirrors the conditions under which ``LocationManager.is_allowed`` lets
+    every location through.
+    """
+    return bool(
+        LocationConfig.no_location_check
+        or not settings.ROW_SECURITY
+        or user.is_superuser
+    )
+
+
+def check_batch_location_scope(user, location_id):
+    """Refuse a batch run for a location outside ``user``'s scope.
+
+    ``None`` or ``-1`` asks for the national run, which processes every
+    location's claims and triggers the calculation rules for all of them, so
+    it is reserved to a user whose scope is national.
+    """
+    if location_id is None or location_id == -1:
+        if not has_national_scope(user):
+            raise PermissionDenied(_("unauthorized"))
+    elif not LocationManager().is_allowed(user, [location_id]):
+        raise PermissionDenied(_("unauthorized"))
+
+
 class ProcessBatchService(object):
 
     def __init__(self, user):
         self.user = user
 
     def submit(self, submit):
+        check_batch_location_scope(self.user, submit.location_id)
         return process_batch(self.user.i_user.id, submit.location_id, submit.month, submit.year)
 
     def old_submit(self, submit):

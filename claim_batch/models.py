@@ -11,6 +11,10 @@ from product.models import Product
 
 
 class BatchRun(core_models.VersionedModel):
+    # A batch run belongs to a region or a district; no location is the
+    # national run, visible to everyone holding the read right.
+    row_scope = core_models.LocationScope("location", loc_types=("R", "D"))
+
     id = models.AutoField(db_column='RunID', primary_key=True)
     location = models.ForeignKey(
         location_models.Location, models.DO_NOTHING,
@@ -26,6 +30,10 @@ class BatchRun(core_models.VersionedModel):
 
 
 class RelativeIndex(core_models.VersionedModel):
+    # Computed by a batch run for its location: same rule as BatchRun, no
+    # location being the national index.
+    row_scope = core_models.LocationScope("location", loc_types=("R", "D"))
+
     id = models.AutoField(db_column='RelIndexID', primary_key=True)
     product = models.ForeignKey(
         product_models.Product, models.DO_NOTHING, db_column='ProdID')
